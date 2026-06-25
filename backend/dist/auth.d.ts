@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 export interface UserPayload {
-    userId: number;
-    role: 'teacher' | 'student';
+    userId: string;
+    role: 'teacher' | 'student' | 'ADMIN' | 'STUDENT';
     name: string;
     email?: string;
 }

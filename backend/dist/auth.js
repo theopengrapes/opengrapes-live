@@ -76,8 +76,14 @@ function requireRole(role) {
         if (!req.user) {
             return res.status(401).json({ error: 'Authentication required' });
         }
-        if (req.user.role !== role) {
-            return res.status(403).json({ error: `Forbidden: requires ${role} role` });
+        const userRole = req.user.role;
+        const isTeacher = userRole === 'teacher' || userRole === 'ADMIN';
+        const isStudent = userRole === 'student' || userRole === 'STUDENT';
+        if (role === 'teacher' && !isTeacher) {
+            return res.status(403).json({ error: 'Forbidden: requires teacher role' });
+        }
+        if (role === 'student' && !isStudent) {
+            return res.status(403).json({ error: 'Forbidden: requires student role' });
         }
         next();
     };

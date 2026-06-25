@@ -9,7 +9,7 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 
-import { db, insertHandoffCode } from './db';
+import { db } from './db';
 import { requireAuth, requireRole, requireClassroomAuth, requireLMSOrClassroomAuth } from './auth';
 
 // Ensure uploads folder exists
@@ -78,156 +78,370 @@ async function isTeacherPresent(roomId: string): Promise<boolean> {
   }
 }
 
-// POST /api/auth/login
-app.post('/api/auth/login', async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    res.status(400).json({ error: 'Email and password are required' });
-    return;
-  }
-
-  try {
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as any;
-    if (!user) {
-      res.status(401).json({ error: 'Invalid email or password' });
-      return;
-    }
-
-    const match = await bcrypt.compare(password, user.password_hash);
-    if (!match) {
-      res.status(401).json({ error: 'Invalid email or password' });
-      return;
-    }
-
-    const token = jwt.sign(
-      { userId: user.id, role: user.role, name: user.name, email: user.email },
-      LMS_JWT_SECRET,
-      { expiresIn: '24h' }
-    );
-
-    res.json({
-      token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      },
-    });
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
 // GET /api/auth/me
 app.get('/api/auth/me', requireAuth, (req, res) => {
   res.json({ user: req.user });
 });
 
-// POST /api/start-class
-app.post('/api/start-class', requireAuth, requireRole('teacher'), async (req, res) => {
-  const { batchId } = req.body;
-  if (!batchId) {
-    res.status(400).json({ error: 'batchId is required' });
+// POST /api/exchange-lms-token
+app.post('/api/exchange-lms-token', async (req, res) => {
+  const { token } = req.body;
+  if (!token) {
+    res.status(400).json({ error: 'LMS token is required' });
     return;
   }
 
   try {
-    // Check batch ownership
-    const batch = db.prepare('SELECT * FROM batches WHERE id = ? AND teacher_id = ?').get(batchId, req.user!.userId) as any;
-    if (!batch) {
-      res.status(403).json({ error: 'You are not the teacher of this batch' });
+    // Verify token signature
+    const decoded = jwt.verify(token, LMS_JWT_SECRET) as {
+      userId?: string;
+      id?: string;
+      email: string;
+      name: string;
+      role: string;
+      meetingId: string; // acting as roomId
+      batchId?: string;
+    };
+
+    const userEmail = decoded.email;
+    const userName = decoded.name || 'Participant';
+    const rawRole = decoded.role;
+    const meetingId = decoded.meetingId;
+
+    if (!userEmail || !meetingId) {
+      res.status(400).json({ error: 'Invalid LMS token payload' });
       return;
     }
 
-    // Check for active session
-    const activeSession = db.prepare("SELECT * FROM live_sessions WHERE batch_id = ? AND status = 'live'").get(batchId) as any;
-    if (activeSession) {
-      const handoffCode = crypto.randomBytes(32).toString('hex');
-      insertHandoffCode(handoffCode, req.user!.userId, req.user!.role, activeSession.room_id, batchId);
-      res.status(200).json({ roomId: activeSession.room_id, code: handoffCode });
-      return;
+    // Check if user exists in the PostgreSQL "User" table
+    const userRes = await db.query('SELECT id, name, email, role FROM "User" WHERE email = $1', [userEmail]);
+    let userId: string;
+    let finalRole: string = rawRole;
+
+    if (userRes.rows.length === 0) {
+      // Map role to Prisma enum values
+      const prismaRole = (rawRole === 'teacher' || rawRole === 'ADMIN') ? 'ADMIN' : 'STUDENT';
+      userId = decoded.userId || decoded.id || crypto.randomUUID();
+      await db.query(
+        'INSERT INTO "User" (id, name, email, role, status) VALUES ($1, $2, $3, $4, \'APPROVED\')',
+        [userId, userName, userEmail, prismaRole]
+      );
+      finalRole = prismaRole;
+    } else {
+      userId = userRes.rows[0].id;
+      finalRole = userRes.rows[0].role;
     }
 
-    // Generate unique room_id
-    const roomId = `batch-${batchId}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+    // Ensure a "LiveSession" record exists for meetingId (roomId)
+    const sessionRes = await db.query(
+      'SELECT id, "batchId", "roomId", status, "startedAt", "teacherJoined", "hasNotes" FROM "LiveSession" WHERE "roomId" = $1',
+      [meetingId]
+    );
+    let liveSession = sessionRes.rows[0];
 
-    // Insert session
-    db.prepare('INSERT INTO live_sessions (batch_id, room_id, status) VALUES (?, ?, ?)').run(batchId, roomId, 'live');
+    const isTeacher = finalRole === 'ADMIN' || finalRole === 'teacher' || rawRole === 'teacher';
 
-    // Initialize Transcript DO
-    const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
-    const workerSecret = process.env.WORKER_API_SECRET || '';
-    try {
-      const expressBackendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || `http://localhost:${PORT}`;
-      console.log(`[Init DO] Calling DO init for room ${roomId} with backend ${expressBackendUrl}`);
-      await fetch(`${workerUrl}/api/transcript/${roomId}/init`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Worker-Secret': workerSecret
-        },
-        body: JSON.stringify({
-          backendUrl: expressBackendUrl,
-          sessionMeta: {
-            teacherId: req.user!.userId,
-            topicNotes: batch.name || 'Class',
-            startedAt: Date.now()
-          }
-        })
-      });
-    } catch (doInitErr) {
-      console.error('[Init DO] Failed to initialize Transcript DO:', doInitErr);
+    if (!liveSession) {
+      if (isTeacher) {
+        // Find batchId from Meeting or token
+        let batchId = decoded.batchId;
+        if (!batchId) {
+          const meetingRes = await db.query('SELECT "batchId" FROM "Meeting" WHERE id = $1', [meetingId]);
+          batchId = meetingRes.rows[0]?.batchId;
+        }
+
+        if (!batchId) {
+          res.status(400).json({ error: 'Could not resolve batchId for meeting' });
+          return;
+        }
+
+        const sessionId = crypto.randomUUID();
+        // Insert live session
+        const insertRes = await db.query(
+          'INSERT INTO "LiveSession" (id, "batchId", "roomId", status, "startedAt", "teacherJoined", "hasNotes") VALUES ($1, $2, $3, \'live\', NOW(), false, false) RETURNING id, "batchId", "roomId", status, "startedAt", "teacherJoined", "hasNotes"',
+          [sessionId, batchId, meetingId]
+        );
+        liveSession = insertRes.rows[0];
+
+        // Trigger Sync Worker DO initialization
+        const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+        const workerSecret = process.env.WORKER_API_SECRET || '';
+        try {
+          const batchRes = await db.query('SELECT name FROM "Batch" WHERE id = $1', [batchId]);
+          const batchName = batchRes.rows[0]?.name || 'Class';
+          const expressBackendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || `http://localhost:${PORT}`;
+          
+          console.log(`[Init DO] Calling DO init for room ${meetingId} with backend ${expressBackendUrl}`);
+          await fetch(`${workerUrl}/api/transcript/${meetingId}/init`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Worker-Secret': workerSecret
+            },
+            body: JSON.stringify({
+              backendUrl: expressBackendUrl,
+              sessionMeta: {
+                teacherId: userId,
+                topicNotes: batchName,
+                startedAt: Date.now()
+              }
+            })
+          });
+        } catch (doInitErr) {
+          console.error('[Init DO] Failed to initialize Transcript DO:', doInitErr);
+        }
+      } else {
+        res.status(403).json({ error: 'Meeting session has not been started by the teacher' });
+        return;
+      }
     }
 
-    // Generate handoff code
-    const handoffCode = crypto.randomBytes(32).toString('hex');
-    insertHandoffCode(handoffCode, req.user!.userId, req.user!.role, roomId, batchId);
+    // Sign and return native accessToken and refreshToken
+    const nativeRole = isTeacher ? 'teacher' : 'student';
+    const claims = {
+      userId,
+      role: nativeRole,
+      roomId: meetingId,
+      batchId: liveSession.batchId,
+      name: userName,
+      email: userEmail,
+    };
 
-    res.status(200).json({ roomId, code: handoffCode });
+    const accessToken = jwt.sign(
+      { ...claims, type: 'access' },
+      ACCESS_TOKEN_SECRET,
+      { expiresIn: '30m' }
+    );
+
+    const refreshToken = jwt.sign(
+      { ...claims, type: 'refresh' },
+      REFRESH_TOKEN_SECRET,
+      { expiresIn: '2.5h' }
+    );
+
+    // Get startedAtMs
+    const startedAtMs = new Date(liveSession.startedAt).getTime();
+
+    res.json({
+      accessToken,
+      refreshToken,
+      roomName: meetingId,
+      startedAtMs
+    });
+
   } catch (error) {
-    console.error('Start class error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Exchange LMS token error:', error);
+    res.status(401).json({ error: 'Invalid or expired LMS token' });
   }
 });
 
-// POST /api/join-class
-app.post('/api/join-class', requireAuth, requireRole('student'), async (req, res) => {
-  const { batchId } = req.body;
-  if (!batchId) {
-    res.status(400).json({ error: 'batchId is required' });
+// POST /api/renew-session
+app.post('/api/renew-session', async (req, res) => {
+  const { refreshToken } = req.body;
+  if (!refreshToken) {
+    res.status(400).json({ error: 'Refresh token required' });
     return;
   }
 
   try {
-    // Validate enrollment
-    const enrollment = db.prepare("SELECT * FROM enrollments WHERE student_id = ? AND batch_id = ? AND status = 'active'").get(req.user!.userId, batchId) as any;
-    if (!enrollment) {
-      res.status(403).json({ error: 'You are not enrolled in this batch' });
+    const decoded = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET) as any;
+    if (decoded.type !== 'refresh') {
+      res.status(401).json({ error: 'Invalid token type' });
       return;
     }
 
-    // Check active session
-    const activeSession = db.prepare("SELECT * FROM live_sessions WHERE batch_id = ? AND status = 'live'").get(batchId) as any;
-    if (!activeSession) {
-      res.status(404).json({ error: 'No live class running for this batch' });
+    // Check if session status is still live in PostgreSQL
+    const sessionRes = await db.query('SELECT status FROM "LiveSession" WHERE "roomId" = $1', [decoded.roomId]);
+    const session = sessionRes.rows[0];
+    if (!session || session.status !== 'live') {
+      res.status(401).json({ error: 'Classroom session is no longer active' });
       return;
     }
 
-    // Verify teacher has joined the class session at least once
-    if (!activeSession.teacher_joined) {
-      res.status(403).json({ error: 'The teacher has not joined the meeting yet' });
+    const newAccessToken = jwt.sign(
+      {
+        userId: decoded.userId,
+        role: decoded.role,
+        roomId: decoded.roomId,
+        batchId: decoded.batchId,
+        name: decoded.name,
+        email: decoded.email,
+        type: 'access',
+      },
+      ACCESS_TOKEN_SECRET,
+      { expiresIn: '30m' }
+    );
+
+    res.status(200).json({ accessToken: newAccessToken });
+  } catch (e) {
+    res.status(401).json({ error: 'Expired or invalid refresh token' });
+  }
+});
+
+// POST /api/token
+// Body: { roomName: string, sessionToken: string }
+app.post('/api/token', async (req, res) => {
+  const { roomName, sessionToken } = req.body;
+
+  if (!roomName || !sessionToken) {
+    res.status(400).json({ error: 'roomName and sessionToken are required' });
+    return;
+  }
+
+  try {
+    // Verify session token
+    const decoded = jwt.verify(sessionToken, ACCESS_TOKEN_SECRET) as {
+      userId: string;
+      role: string;
+      name: string;
+      roomId: string;
+      type: string;
+    };
+
+    if (decoded.type !== 'access') {
+      res.status(401).json({ error: 'Invalid token type' });
       return;
     }
 
-    // Generate handoff code
-    const handoffCode = crypto.randomBytes(32).toString('hex');
-    insertHandoffCode(handoffCode, req.user!.userId, req.user!.role, activeSession.room_id, batchId);
+    if (decoded.roomId !== roomName) {
+      res.status(403).json({ error: 'Session token is not valid for this roomName' });
+      return;
+    }
 
-    res.status(200).json({ roomId: activeSession.room_id, code: handoffCode });
+    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+      identity: decoded.userId,
+      name: decoded.name,
+      ttl: '3h',
+    });
+
+    // Embed the role in participant metadata
+    at.metadata = decoded.role;
+
+    if (decoded.role === 'teacher') {
+      try {
+        await db.query('UPDATE "LiveSession" SET "teacherJoined" = true WHERE "roomId" = $1', [roomName]);
+      } catch (dbErr) {
+        console.error('Failed to update teacherJoined status in database:', dbErr);
+      }
+    }
+
+    at.addGrant({
+      roomJoin: true,
+      room: roomName,
+      canPublish: true,
+      canSubscribe: true,
+    });
+
+    const token = await at.toJwt();
+    res.json({ token });
   } catch (error) {
-    console.error('Join class error:', error);
+    console.error('Token generation or session verification error:', error);
+    res.status(401).json({ error: 'Invalid or expired session token' });
+  }
+});
+
+// GET /api/my-batches
+app.get('/api/my-batches', requireAuth, async (req, res) => {
+  try {
+    if (req.user!.role === 'teacher') {
+      const batchesRes = await db.query(`
+        SELECT b.id, b.name,
+               ls."roomId" as "activeRoomId", ls."startedAt" as "activeStartedAt"
+        FROM "Batch" b
+        LEFT JOIN "LiveSession" ls ON ls."batchId" = b.id AND ls.status = 'live'
+        WHERE b."teacherId" = $1
+      `, [req.user!.userId]);
+      const batches = batchesRes.rows;
+
+      const result = await Promise.all(batches.map(async (b) => {
+        const studentsRes = await db.query(`
+          SELECT u.id, u.name, u.email
+          FROM "Enrollment" e
+          JOIN "User" u ON e."studentId" = u.id
+          WHERE e."batchId" = $1 AND e.status = 'APPROVED'
+        `, [b.id]);
+        const students = studentsRes.rows;
+
+        const pastSessionsRes = await db.query(`
+          SELECT "roomId" as "roomId", "startedAt" as "startedAt", "endedAt" as "endedAt", "hasNotes" as "hasNotes",
+                 (SELECT COUNT(*) FROM "MeetingMinutes" mm WHERE mm."sessionId" = "roomId")::integer as "hasMom"
+          FROM "LiveSession"
+          WHERE "batchId" = $1 AND status IN ('completed', 'expired')
+          ORDER BY "startedAt" DESC
+        `, [b.id]);
+        const pastSessions = pastSessionsRes.rows;
+
+        let activeSession = null;
+        if (b.activeRoomId) {
+          activeSession = { roomId: b.activeRoomId, startedAt: b.activeStartedAt };
+        }
+
+        return {
+          id: b.id,
+          name: b.name,
+          teacherName: req.user!.name,
+          studentCount: students.length,
+          students: students.map(s => ({ id: s.id, name: s.name, email: s.email })),
+          activeSession,
+          pastSessions: pastSessions.map(ps => ({
+            roomId: ps.roomId,
+            startedAt: ps.startedAt,
+            endedAt: ps.endedAt,
+            hasNotes: ps.hasNotes === true,
+            hasMom: ps.hasMom > 0
+          }))
+        };
+      }));
+
+      res.json({ batches: result });
+    } else {
+      const batchesRes = await db.query(`
+        SELECT b.id, b.name, u.name as "teacherName",
+               ls."roomId" as "activeRoomId", ls."startedAt" as "activeStartedAt", ls."teacherJoined" as "activeTeacherJoined"
+        FROM "Enrollment" e
+        JOIN "Batch" b ON e."batchId" = b.id
+        JOIN "User" u ON b."teacherId" = u.id
+        LEFT JOIN "LiveSession" ls ON ls."batchId" = b.id AND ls.status = 'live'
+        WHERE e."studentId" = $1 AND e.status = 'APPROVED'
+      `, [req.user!.userId]);
+      const batches = batchesRes.rows;
+
+      const result = await Promise.all(batches.map(async (b) => {
+        const pastSessionsRes = await db.query(`
+          SELECT "roomId" as "roomId", "startedAt" as "startedAt", "endedAt" as "endedAt", "hasNotes" as "hasNotes",
+                 (SELECT COUNT(*) FROM "MeetingMinutes" mm WHERE mm."sessionId" = "roomId")::integer as "hasMom"
+          FROM "LiveSession"
+          WHERE "batchId" = $1 AND status IN ('completed', 'expired')
+          ORDER BY "startedAt" DESC
+        `, [b.id]);
+        const pastSessions = pastSessionsRes.rows;
+
+        let activeSession = null;
+        if (b.activeRoomId && b.activeTeacherJoined === true) {
+          activeSession = { roomId: b.activeRoomId, startedAt: b.activeStartedAt };
+        }
+
+        return {
+          id: b.id,
+          name: b.name,
+          teacherName: b.teacherName,
+          studentCount: 0,
+          students: [],
+          activeSession,
+          pastSessions: pastSessions.map(ps => ({
+            roomId: ps.roomId,
+            startedAt: ps.startedAt,
+            endedAt: ps.endedAt,
+            hasNotes: ps.hasNotes === true,
+            hasMom: ps.hasMom > 0
+          }))
+        };
+      }));
+
+      res.json({ batches: result });
+    }
+  } catch (error) {
+    console.error('Get my batches error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -242,17 +456,19 @@ app.post('/api/end-class', requireLMSOrClassroomAuth, requireRole('teacher'), as
 
   try {
     // Check batch ownership
-    const batch = db.prepare('SELECT * FROM batches WHERE id = ? AND teacher_id = ?').get(batchId, req.user!.userId) as any;
+    const batchRes = await db.query('SELECT * FROM "Batch" WHERE id = $1 AND "teacherId" = $2', [batchId, req.user!.userId]);
+    const batch = batchRes.rows[0];
     if (!batch) {
       res.status(403).json({ error: 'You are not the teacher of this batch' });
       return;
     }
 
     // Get the active session room_id before updating
-    const activeSession = db.prepare("SELECT room_id FROM live_sessions WHERE batch_id = ? AND status = 'live'").get(batchId) as any;
+    const activeSessionRes = await db.query('SELECT "roomId" FROM "LiveSession" WHERE "batchId" = $1 AND status = \'live\'', [batchId]);
+    const activeSession = activeSessionRes.rows[0];
 
-    if (activeSession && activeSession.room_id) {
-      const sessionId = activeSession.room_id;
+    if (activeSession && activeSession.roomId) {
+      const sessionId = activeSession.roomId;
       const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
       const workerSecret = process.env.WORKER_API_SECRET || '';
 
@@ -269,10 +485,11 @@ app.post('/api/end-class', requireLMSOrClassroomAuth, requireRole('teacher'), as
         console.error('Failed to fetch DO data on end class:', err);
       }
 
-      // 2. Fetch all doubts from SQLite
+      // 2. Fetch all doubts from PostgreSQL
       let doubtsList: any[] = [];
       try {
-        doubtsList = db.prepare('SELECT doubt_text, answer FROM doubts WHERE session_id = ?').all(sessionId) as any[];
+        const doubtsRes = await db.query('SELECT "doubtText", answer FROM "Doubt" WHERE "sessionId" = $1', [sessionId]);
+        doubtsList = doubtsRes.rows;
       } catch (err) {
         console.error('Failed to fetch doubts on end class:', err);
       }
@@ -289,7 +506,7 @@ app.post('/api/end-class', requireLMSOrClassroomAuth, requireRole('teacher'), as
             return `[${min}:${sec}] ${s.name} (${s.role}): ${s.text}`;
           }).join('\n');
 
-          const doubtsText = doubtsList.map((d: any, idx: number) => `${idx + 1}. Doubt: "${d.doubt_text}" -> Answer: "${d.answer.substring(0, 100)}..."`).join('\n') || 'None';
+          const doubtsText = doubtsList.map((d: any, idx: number) => `${idx + 1}. Doubt: "${d.doubtText}" -> Answer: "${d.answer.substring(0, 100)}..."`).join('\n') || 'None';
           const topicNotes = transcriptData.sessionMeta?.topicNotes || batch.name || '';
 
           const prompt = `You are a professional live class assistant. Your job is to compile a structured Minutes of Meeting (MoM) report for a live class based on the full transcript, topics covered, and student doubts asked.
@@ -331,9 +548,15 @@ Make the tone professional, structured, and easy for students to study from.`;
         }
       }
 
-      // 4. Save MoM to SQLite database
+      // 4. Save MoM to PostgreSQL database
       try {
-        db.prepare('INSERT OR REPLACE INTO meeting_minutes (session_id, content) VALUES (?, ?)').run(sessionId, momContent);
+        await db.query(
+          `INSERT INTO "MeetingMinutes" (id, "sessionId", content, "generatedAt")
+           VALUES ($1, $2, $3, NOW())
+           ON CONFLICT ("sessionId")
+           DO UPDATE SET content = $3, "generatedAt" = NOW()`,
+          [crypto.randomUUID(), sessionId, momContent]
+        );
         console.log(`[End Class] Saved MoM for session: ${sessionId}`);
       } catch (err) {
         console.error('Failed to save MoM to database:', err);
@@ -354,287 +577,22 @@ Make the tone professional, structured, and easy for students to study from.`;
     }
 
     // Set session as completed and store hasNotes
-    const hasNotesInt = hasNotes ? 1 : 0;
-    db.prepare("UPDATE live_sessions SET status = 'completed', ended_at = datetime('now'), has_notes = ? WHERE batch_id = ? AND status = 'live'").run(hasNotesInt, batchId);
+    await db.query(
+      'UPDATE "LiveSession" SET status = \'completed\', "endedAt" = NOW(), "hasNotes" = $1 WHERE "batchId" = $2 AND status = \'live\'',
+      [hasNotes === true, batchId]
+    );
 
-    if (activeSession && activeSession.room_id) {
+    if (activeSession && activeSession.roomId) {
       try {
-        await roomService.deleteRoom(activeSession.room_id);
+        await roomService.deleteRoom(activeSession.roomId);
       } catch (lkErr: any) {
-        console.error(`Failed to delete LiveKit room ${activeSession.room_id}:`, lkErr);
+        console.error(`Failed to delete LiveKit room ${activeSession.roomId}:`, lkErr);
       }
     }
 
     res.json({ ok: true });
   } catch (error) {
     console.error('End class error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// POST /api/exchange-session
-app.post('/api/exchange-session', async (req, res) => {
-  const { code } = req.body;
-  if (!code) {
-    res.status(400).json({ error: 'Handoff code required' });
-    return;
-  }
-
-  try {
-    const row = db.prepare(`SELECT * FROM handoff_codes WHERE code = ? AND used = 0`).get(code) as any;
-    if (!row || Date.now() - row.created_at > 60 * 1000) {
-      res.status(401).json({ error: 'Invalid or expired handoff code' });
-      return;
-    }
-
-    // Burn code immediately
-    db.prepare(`UPDATE handoff_codes SET used = 1 WHERE code = ?`).run(code);
-
-    // Fetch user name and email
-    const user = db.prepare(`SELECT name, email FROM users WHERE id = ?`).get(row.user_id) as any;
-    const userName = user ? user.name : 'Participant';
-    const userEmail = user ? user.email : '';
-
-    const claims = {
-      userId: row.user_id,
-      role: row.role,
-      roomId: row.room_id,
-      batchId: row.batch_id,
-      name: userName,
-      email: userEmail,
-    };
-
-    const accessToken = jwt.sign(
-      { ...claims, type: 'access' },
-      ACCESS_TOKEN_SECRET,
-      { expiresIn: '30m' }
-    );
-
-    const refreshToken = jwt.sign(
-      { ...claims, type: 'refresh' },
-      REFRESH_TOKEN_SECRET,
-      { expiresIn: '2.5h' }
-    );
-
-    // Fetch session start time to synchronize clients
-    const session = db.prepare('SELECT started_at FROM live_sessions WHERE room_id = ?').get(row.room_id) as any;
-    const startedAtMs = session ? new Date(session.started_at + ' UTC').getTime() : Date.now();
-
-    res.status(200).json({
-      accessToken,
-      refreshToken,
-      roomId: row.room_id,
-      batchId: row.batch_id,
-      role: row.role,
-      startedAtMs
-    });
-  } catch (error) {
-    console.error('Exchange session error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// POST /api/renew-session
-app.post('/api/renew-session', async (req, res) => {
-  const { refreshToken } = req.body;
-  if (!refreshToken) {
-    res.status(400).json({ error: 'Refresh token required' });
-    return;
-  }
-
-  try {
-    const decoded = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET) as any;
-    if (decoded.type !== 'refresh') {
-      res.status(401).json({ error: 'Invalid token type' });
-      return;
-    }
-
-    // Check if session status is still live in SQLite
-    const session = db.prepare(`SELECT status FROM live_sessions WHERE room_id = ?`).get(decoded.roomId) as any;
-    if (!session || session.status !== 'live') {
-      res.status(401).json({ error: 'Classroom session is no longer active' });
-      return;
-    }
-
-    const newAccessToken = jwt.sign(
-      {
-        userId: decoded.userId,
-        role: decoded.role,
-        roomId: decoded.roomId,
-        batchId: decoded.batchId,
-        name: decoded.name,
-        email: decoded.email,
-        type: 'access',
-      },
-      ACCESS_TOKEN_SECRET,
-      { expiresIn: '30m' }
-    );
-
-    res.status(200).json({ accessToken: newAccessToken });
-  } catch (e) {
-    res.status(401).json({ error: 'Expired or invalid refresh token' });
-  }
-});
-
-// POST /api/token
-// Body: { roomName: string, sessionToken: string }
-app.post('/api/token', async (req, res) => {
-  const { roomName, sessionToken } = req.body;
-
-  if (!roomName || !sessionToken) {
-    res.status(400).json({ error: 'roomName and sessionToken are required' });
-    return;
-  }
-
-  try {
-    // Verify session token
-    const decoded = jwt.verify(sessionToken, ACCESS_TOKEN_SECRET) as {
-      userId: number;
-      role: string;
-      name: string;
-      roomId: string;
-      type: string;
-    };
-
-    if (decoded.type !== 'access') {
-      res.status(401).json({ error: 'Invalid token type' });
-      return;
-    }
-
-    if (decoded.roomId !== roomName) {
-      res.status(403).json({ error: 'Session token is not valid for this roomName' });
-      return;
-    }
-
-    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
-      identity: decoded.userId.toString(),
-      name: decoded.name,
-      ttl: '3h',
-    });
-
-    // Embed the role in participant metadata
-    at.metadata = decoded.role;
-
-    if (decoded.role === 'teacher') {
-      try {
-        db.prepare("UPDATE live_sessions SET teacher_joined = 1 WHERE room_id = ?").run(roomName);
-      } catch (dbErr) {
-        console.error('Failed to update teacher_joined status in database:', dbErr);
-      }
-    }
-
-    at.addGrant({
-      roomJoin: true,
-      room: roomName,
-      canPublish: true,
-      canSubscribe: true,
-    });
-
-    const token = await at.toJwt();
-    res.json({ token });
-  } catch (error) {
-    console.error('Token generation or session verification error:', error);
-    res.status(401).json({ error: 'Invalid or expired session token' });
-  }
-});
-
-// GET /api/my-batches
-app.get('/api/my-batches', requireAuth, async (req, res) => {
-  try {
-    if (req.user!.role === 'teacher') {
-      const batches = db.prepare(`
-        SELECT b.id, b.name,
-               ls.room_id as activeRoomId, ls.started_at as activeStartedAt
-        FROM batches b
-        LEFT JOIN live_sessions ls ON ls.batch_id = b.id AND ls.status = 'live'
-        WHERE b.teacher_id = ?
-      `).all(req.user!.userId) as any[];
-
-      const result = await Promise.all(batches.map(async (b) => {
-        const students = db.prepare(`
-          SELECT u.id, u.name, u.email
-          FROM enrollments e
-          JOIN users u ON e.student_id = u.id
-          WHERE e.batch_id = ? AND e.status = 'active'
-        `).all(b.id) as any[];
-
-        const pastSessions = db.prepare(`
-          SELECT room_id as roomId, started_at as startedAt, ended_at as endedAt, has_notes as hasNotes,
-                 (SELECT COUNT(*) FROM meeting_minutes mm WHERE mm.session_id = room_id) as hasMom
-          FROM live_sessions
-          WHERE batch_id = ? AND status IN ('completed', 'expired')
-          ORDER BY started_at DESC
-        `).all(b.id) as any[];
-
-        let activeSession = null;
-        if (b.activeRoomId) {
-          activeSession = { roomId: b.activeRoomId, startedAt: b.activeStartedAt };
-        }
-
-        return {
-          id: b.id,
-          name: b.name,
-          teacherName: req.user!.name,
-          studentCount: students.length,
-          students: students.map(s => ({ id: s.id, name: s.name, email: s.email })),
-          activeSession,
-          pastSessions: pastSessions.map(ps => ({
-            roomId: ps.roomId,
-            startedAt: ps.startedAt,
-            endedAt: ps.endedAt,
-            hasNotes: ps.hasNotes === 1,
-            hasMom: ps.hasMom > 0
-          }))
-        };
-      }));
-
-      res.json({ batches: result });
-    } else {
-      const batches = db.prepare(`
-        SELECT b.id, b.name, u.name as teacherName,
-               ls.room_id as activeRoomId, ls.started_at as activeStartedAt, ls.teacher_joined as activeTeacherJoined
-        FROM enrollments e
-        JOIN batches b ON e.batch_id = b.id
-        JOIN users u ON b.teacher_id = u.id
-        LEFT JOIN live_sessions ls ON ls.batch_id = b.id AND ls.status = 'live'
-        WHERE e.student_id = ? AND e.status = 'active'
-      `).all(req.user!.userId) as any[];
-
-      const result = await Promise.all(batches.map(async (b) => {
-        const pastSessions = db.prepare(`
-          SELECT room_id as roomId, started_at as startedAt, ended_at as endedAt, has_notes as hasNotes,
-                 (SELECT COUNT(*) FROM meeting_minutes mm WHERE mm.session_id = room_id) as hasMom
-          FROM live_sessions
-          WHERE batch_id = ? AND status IN ('completed', 'expired')
-          ORDER BY started_at DESC
-        `).all(b.id) as any[];
-
-        let activeSession = null;
-        if (b.activeRoomId && b.activeTeacherJoined === 1) {
-          activeSession = { roomId: b.activeRoomId, startedAt: b.activeStartedAt };
-        }
-
-        return {
-          id: b.id,
-          name: b.name,
-          teacherName: b.teacherName,
-          studentCount: 0,
-          students: [],
-          activeSession,
-          pastSessions: pastSessions.map(ps => ({
-            roomId: ps.roomId,
-            startedAt: ps.startedAt,
-            endedAt: ps.endedAt,
-            hasNotes: ps.hasNotes === 1,
-            hasMom: ps.hasMom > 0
-          }))
-        };
-      }));
-
-      res.json({ batches: result });
-    }
-  } catch (error) {
-    console.error('Get my batches error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -779,8 +737,7 @@ app.post('/api/livekit-webhook', async (req, res) => {
         console.log(`[Webhook][room_finished] Cleared pending teacher absent timeout for room: ${roomName}`);
       }
 
-      db.prepare("UPDATE live_sessions SET status = 'completed', ended_at = datetime('now') WHERE room_id = ? AND status = 'live'")
-        .run(roomName);
+      await db.query('UPDATE "LiveSession" SET status = \'completed\', "endedAt" = NOW() WHERE "roomId" = $1 AND status = \'live\'', [roomName]);
       console.log(`[Webhook] Room finished, marked session as completed for room: ${roomName}`);
     } 
     
@@ -800,8 +757,7 @@ app.post('/api/livekit-webhook', async (req, res) => {
                 try {
                   console.log(`[Webhook] 10-minute grace period expired. Auto-terminating room: ${roomName}...`);
                   
-                  db.prepare("UPDATE live_sessions SET status = 'completed', ended_at = datetime('now') WHERE room_id = ? AND status = 'live'")
-                    .run(roomName);
+                  await db.query('UPDATE "LiveSession" SET status = \'completed\', "endedAt" = NOW() WHERE "roomId" = $1 AND status = \'live\'', [roomName]);
 
                   await roomService.deleteRoom(roomName);
                   
@@ -832,6 +788,8 @@ app.post('/api/livekit-webhook', async (req, res) => {
           teacherLeftTimeouts.delete(roomName);
           console.log(`[Webhook] Teacher rejoined room ${roomName} within grace period. Cancelled auto-termination timer.`);
         }
+        await db.query('UPDATE "LiveSession" SET "teacherJoined" = true WHERE "roomId" = $1 AND status = \'live\'', [roomName]);
+        console.log(`[Webhook] Teacher joined room ${roomName}. Marked teacherJoined as true.`);
       }
     }
 
@@ -848,21 +806,21 @@ app.get('/api/health', (_req, res) => {
 });
 
 // Periodic stale session cleanup sweep (every 60 seconds)
-setInterval(() => {
+setInterval(async () => {
   try {
-    const expired = db.prepare(`
-      SELECT id, room_id FROM live_sessions
-      WHERE status = 'live' AND started_at < datetime('now', '-2 hours')
-    `).all() as any[];
+    const expiredRes = await db.query(`
+      SELECT id, "roomId" as "room_id" FROM "LiveSession"
+      WHERE status = 'live' AND "startedAt" < NOW() - INTERVAL '2 hours'
+    `);
+    const expired = expiredRes.rows;
 
     if (expired.length > 0) {
-      const update = db.prepare(`
-        UPDATE live_sessions
-        SET status = 'expired', ended_at = datetime('now')
-        WHERE id = ?
-      `);
       for (const sess of expired) {
-        update.run(sess.id);
+        await db.query(`
+          UPDATE "LiveSession"
+          SET status = 'expired', "endedAt" = NOW()
+          WHERE id = $1
+        `, [sess.id]);
         console.log(`[Sweep] Automatically expired live session ${sess.id} (room: ${sess.room_id})`);
       }
     }
@@ -1111,14 +1069,15 @@ Keep your answer under 250 words. Use formatting like bullet points or bold text
     res.write('data: [DONE]\n\n');
     res.end();
 
-    // 4. Save doubt history to SQLite
+    // 4. Save doubt history to PostgreSQL
     try {
-      db.prepare(`
-        INSERT INTO doubts (session_id, student_id, doubt_text, answer, screenshot)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(sessionId, studentId, doubtText, answerText, screenshot || null);
+      const doubtId = crypto.randomUUID();
+      await db.query(`
+        INSERT INTO "Doubt" (id, "sessionId", "studentId", "doubtText", answer, screenshot)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [doubtId, sessionId, studentId, doubtText, answerText, screenshot || null]);
     } catch (dbErr) {
-      console.error('[Doubt] SQLite log error:', dbErr);
+      console.error('[Doubt] PostgreSQL log error:', dbErr);
     }
 
   } catch (error) {
@@ -1296,18 +1255,32 @@ app.get('/api/transcript/:sessionId', requireClassroomAuth, async (req, res) => 
 });
 
 // GET /api/doubts/:sessionId: Fetch doubts list for classroom display
-app.get('/api/doubts/:sessionId', requireClassroomAuth, (req, res) => {
+app.get('/api/doubts/:sessionId', requireClassroomAuth, async (req, res) => {
   const { sessionId } = req.params;
   try {
-    const rows = db.prepare(`
-      SELECT d.*, u.name as studentName 
-      FROM doubts d
-      JOIN users u ON d.student_id = u.id
-      WHERE d.session_id = ?
+    const doubtsRes = await db.query(`
+      SELECT d.id, d."sessionId", d."studentId", d."doubtText", d.answer, d.screenshot, d.timestamp, u.name as "studentName" 
+      FROM "Doubt" d
+      JOIN "User" u ON d."studentId" = u.id
+      WHERE d."sessionId" = $1
       ORDER BY d.timestamp ASC
-    `).all(sessionId) as any[];
+    `, [sessionId]);
     
-    res.json({ doubts: rows });
+    const doubts = doubtsRes.rows.map(d => ({
+      id: d.id,
+      session_id: d.sessionId,
+      sessionId: d.sessionId,
+      student_id: d.studentId,
+      studentId: d.studentId,
+      doubt_text: d.doubtText,
+      doubtText: d.doubtText,
+      answer: d.answer,
+      screenshot: d.screenshot,
+      timestamp: d.timestamp,
+      studentName: d.studentName
+    }));
+    
+    res.json({ doubts });
   } catch (error) {
     console.error('Fetch doubts error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -1349,15 +1322,16 @@ app.post('/api/transcript/:sessionId/topic', requireClassroomAuth, requireRole('
 });
 
 // GET /api/mom/:sessionId: Fetch post-class meeting minutes (MoM)
-app.get('/api/mom/:sessionId', requireLMSOrClassroomAuth, (req, res) => {
+app.get('/api/mom/:sessionId', requireLMSOrClassroomAuth, async (req, res) => {
   const { sessionId } = req.params;
   try {
-    const row = db.prepare('SELECT * FROM meeting_minutes WHERE session_id = ?').get(sessionId) as any;
+    const momRes = await db.query('SELECT id, "sessionId", content, "generatedAt" FROM "MeetingMinutes" WHERE "sessionId" = $1', [sessionId]);
+    const row = momRes.rows[0];
     if (!row) {
       res.status(404).json({ error: 'Minutes of meeting not found' });
       return;
     }
-    res.json({ mom: row.content, generatedAt: row.generated_at });
+    res.json({ mom: row.content, generatedAt: row.generatedAt });
   } catch (error) {
     console.error('Fetch MoM error:', error);
     res.status(500).json({ error: 'Internal server error' });

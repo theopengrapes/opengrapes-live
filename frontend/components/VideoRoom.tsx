@@ -11,7 +11,7 @@ import {
   useParticipants,
   useMediaDeviceSelect,
 } from '@livekit/components-react';
-import { Track, Room, RoomOptions, RoomConnectOptions } from 'livekit-client';
+import { Track, Room, RoomOptions, RoomConnectOptions, RoomEvent, DisconnectReason } from 'livekit-client';
 import { useMemo, useEffect, useState, useCallback, useRef } from 'react';
 import WhiteboardWrapper from './WhiteboardWrapper';
 import { useAudioTranscriber } from '../hooks/useAudioTranscriber';
@@ -76,7 +76,7 @@ interface VideoRoomProps {
   serverUrl: string;
   userName?: string;
   iceServers?: IceServer[];
-  onDisconnected?: () => void;
+  onDisconnected?: (reason: 'ended' | 'left') => void;
   sessionToken?: string;
   audioDeviceId?: string;
   videoDeviceId?: string;
@@ -88,7 +88,7 @@ interface VideoRoomProps {
 interface RoomContentProps {
   roomName: string;
   userName?: string;
-  onLeave: () => void;
+  onLeave: (reason?: 'teacher-absent' | 'ended-for-all') => void;
   onConnected?: () => void;
   sessionToken?: string;
 }
@@ -653,7 +653,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
           if (prev === null || prev <= 1) {
             clearInterval(interval);
             alert("The teacher is not in the meeting. You will be redirected to the dashboard.");
-            onLeave();
+            onLeave('teacher-absent');
             return null;
           }
           return prev - 1;
@@ -1134,7 +1134,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
           console.warn('[VideoRoom] Failed to clean up localStorage keys:', e);
         }
       }
-      onLeave();
+      onLeave('ended-for-all');
     }
   };
 
@@ -1487,7 +1487,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
             Rejoin Class
           </button>
           <button
-            onClick={onLeave}
+            onClick={() => onLeave()}
             className="px-6 py-2 bg-surface-light border border-border/40 rounded-lg text-sm hover:bg-border/30 transition-colors cursor-pointer text-white w-full"
           >
             Leave Class
@@ -2493,6 +2493,9 @@ export default function VideoRoom({
   videoEnabled = true,
 }: VideoRoomProps) {
   const currentToken = useClassroomSession(token, roomName, sessionToken);
+  
+  const isEndingClassForAll = useRef(false);
+  const isTeacherAbsentDisconnect = useRef(false);
 
   // Create stable Room instance to prevent reconnection loops in React strict mode
   const room = useMemo(() => {
@@ -2532,9 +2535,36 @@ export default function VideoRoom({
     };
   }, [room]);
 
-  const handleLeave = useCallback(() => {
+  const handleLeave = useCallback((reason?: 'teacher-absent' | 'ended-for-all') => {
+    if (reason === 'teacher-absent') {
+      isTeacherAbsentDisconnect.current = true;
+    } else if (reason === 'ended-for-all') {
+      isEndingClassForAll.current = true;
+    }
     room.disconnect().catch(() => {});
   }, [room]);
+
+  // Listen to RoomEvent.Disconnected to distinguish between user leaving and teacher ending class
+  useEffect(() => {
+    const handleDisconnected = (reason?: DisconnectReason) => {
+      console.log('[VideoRoom] Room disconnected, reason:', reason);
+      const wasTeacherEnded = 
+        isEndingClassForAll.current || 
+        isTeacherAbsentDisconnect.current ||
+        reason === DisconnectReason.ROOM_DELETED || 
+        reason === DisconnectReason.ROOM_CLOSED || 
+        reason === DisconnectReason.SERVER_SHUTDOWN;
+      
+      if (onDisconnected) {
+        onDisconnected(wasTeacherEnded ? 'ended' : 'left');
+      }
+    };
+
+    room.on(RoomEvent.Disconnected, handleDisconnected);
+    return () => {
+      room.off(RoomEvent.Disconnected, handleDisconnected);
+    };
+  }, [room, onDisconnected]);
 
   return (
     <LiveKitRoom
@@ -2545,7 +2575,6 @@ export default function VideoRoom({
       connect={true}
       video={videoEnabled}
       audio={audioEnabled}
-      onDisconnected={onDisconnected}
     >
       <RoomContent 
         roomName={roomName} 

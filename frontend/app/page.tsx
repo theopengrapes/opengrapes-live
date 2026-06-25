@@ -15,7 +15,7 @@ interface ClassroomWrapperProps {
   teacherName: string;
   className: string;
   role: string;
-  onLeave: () => void;
+  onLeave: (reason: 'ended' | 'left') => void;
 }
 
 function ClassroomWrapper({
@@ -93,7 +93,7 @@ function ClassroomWrapper({
             Retry Connection
           </button>
           <button
-            onClick={onLeave}
+            onClick={() => onLeave('left')}
             className="px-6 py-2 bg-surface-light border border-border/40 rounded-lg text-sm hover:bg-border/30 transition-colors cursor-pointer text-white w-full"
           >
             Back to Dashboard
@@ -180,19 +180,55 @@ function HomeContent() {
   const [className, setClassName] = useState('');
   const [role, setRole] = useState('');
 
-  // Login Form States
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  // Handoff check and session verification state
 
   // Core Handoff Check
   useEffect(() => {
     const checkSession = async () => {
+      const tokenParam = searchParams.get('token');
       const roomIdParam = searchParams.get('roomId');
       const codeParam = searchParams.get('code');
 
-      if (roomIdParam && codeParam) {
+      if (tokenParam) {
+        // LMS Integration Redirect Path: Exchange LMS JWT token for native classroom tokens
+        try {
+          const res = await fetch('/api/exchange-lms-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: tokenParam }),
+          });
+
+          if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error || 'Failed to exchange LMS token');
+          }
+
+          const data = await res.json();
+          try {
+            sessionStorage.setItem('classroom_access_token', data.accessToken);
+            sessionStorage.setItem('classroom_refresh_token', data.refreshToken);
+            sessionStorage.setItem('active_room_name', data.roomName);
+            if (data.startedAtMs) {
+              sessionStorage.setItem('classroom_session_started_at', data.startedAtMs.toString());
+            }
+          } catch (storageErr) {
+            console.warn('sessionStorage write blocked or failed:', storageErr);
+          }
+
+          setRoomName(data.roomName);
+          setAccessToken(data.accessToken);
+          setIsClassroomMode(true);
+
+          // Clean URL parameters instantly
+          const cleanUrl = window.location.protocol + '//' + window.location.host + window.location.pathname;
+          window.history.replaceState({ path: cleanUrl }, '', cleanUrl);
+        } catch (e: any) {
+          console.error(e);
+          alert(e.message || 'LMS token exchange failed. Redirecting to dashboard...');
+          redirectToLMS();
+          return;
+        }
+      } else if (roomIdParam && codeParam) {
         // Direct Redirect Path: Exchange code for tokens
         try {
           const res = await fetch('/api/exchange-session', {
@@ -275,12 +311,9 @@ function HomeContent() {
               }
             }
           } else {
-            // No active tokens or code. If on subdomain, redirect to LMS dashboard
-            const hostname = window.location.hostname;
-            if (hostname.startsWith('live.')) {
-              redirectToLMS();
-              return;
-            }
+            // No active tokens or code. Redirect to LMS dashboard
+            redirectToLMS();
+            return;
           }
         } catch (storageErr) {
           console.warn('sessionStorage read blocked or failed:', storageErr);
@@ -313,21 +346,12 @@ function HomeContent() {
     setIsVerifying(false);
   }, [accessToken, tokenResolved, isClassroomMode]);
 
-  // Redirect authenticated main domain users to dashboard
-  useEffect(() => {
-    if (tokenResolved && !isClassroomMode && !isLoading && user) {
-      router.push('/dashboard');
-    }
-  }, [user, isLoading, isClassroomMode, tokenResolved, router]);
+  // Local dashboard redirection removed
 
   const redirectToLMS = () => {
-    let lmsDashboardUrl = process.env.NEXT_PUBLIC_LMS_URL || '/dashboard';
-    const hostname = window.location.hostname;
-    if (lmsDashboardUrl === '/dashboard' && hostname.startsWith('live.')) {
-      const mainDomain = hostname.substring(5);
-      lmsDashboardUrl = `${window.location.protocol}//${mainDomain}${window.location.port ? ':' + window.location.port : ''}/dashboard`;
-    }
-    window.location.href = lmsDashboardUrl;
+    const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    const dashboardUrl = isLocalhost ? 'http://localhost:3000' : 'https://opengrapes.com';
+    window.location.href = dashboardUrl;
   };
 
   const handleClearSession = () => {
@@ -341,31 +365,7 @@ function HomeContent() {
     setIsClassroomMode(false);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email.trim() || !password.trim()) return;
-
-    setIsSubmitting(true);
-    setError(null);
-    try {
-      await login(email.trim(), password.trim());
-      router.push('/dashboard');
-    } catch (err: any) {
-      setError(err.message || 'Invalid email or password');
-      setIsSubmitting(false);
-    }
-  };
-
-  if (isLoading || (user && !isSubmitting && !isClassroomMode)) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <svg className="w-8 h-8 text-primary animate-spin" fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
-      </div>
-    );
-  }
+  // Local submit handler removed
 
   if (isClassroomMode) {
     if (isVerifying) {
@@ -386,107 +386,23 @@ function HomeContent() {
         teacherName={teacherName}
         className={className}
         role={role}
-        onLeave={() => {
-          handleClearSession();
-          redirectToLMS();
+        onLeave={(reason) => {
+          if (reason === 'ended') {
+            handleClearSession();
+          }
+          router.push(`/ended?reason=${reason}`);
         }}
       />
     );
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center px-4">
-      {/* Ambient glow */}
-      <div className="fixed inset-0 pointer-events-none overflow-hidden">
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[600px] rounded-full bg-primary/10 blur-[128px]" />
-      </div>
-
-      <div className="relative w-full max-w-md">
-        {/* Card */}
-        <div className="bg-surface/80 backdrop-blur-xl border border-border/50 rounded-2xl shadow-2xl p-8 space-y-6">
-          {/* Header */}
-          <div className="text-center space-y-2">
-            <div className="inline-flex items-center justify-center w-14 h-14 rounded-xl bg-primary/15 mb-2">
-              <svg className="w-7 h-7 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25h-9A2.25 2.25 0 0 0 2.25 7.5v9a2.25 2.25 0 0 0 2.25 2.25Z" />
-              </svg>
-            </div>
-            <h1 className="text-2xl font-bold tracking-tight">OpenGrapes Live</h1>
-            <p className="text-sm text-foreground/50">
-              Sign in to access your dashboard and join live class sessions
-            </p>
-          </div>
-
-          {/* Error display */}
-          {error && (
-            <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/25 text-red-400 text-sm font-medium text-center">
-              {error}
-            </div>
-          )}
-
-          {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-1.5">
-              <label htmlFor="email-input" className="text-xs font-medium text-foreground/60 uppercase tracking-wider">
-                Email Address
-              </label>
-              <input
-                id="email-input"
-                type="email"
-                className="w-full px-4 py-3 rounded-xl bg-surface-light/60 border border-border/40 text-foreground placeholder-foreground/30 outline-none focus:border-primary focus:ring-2 focus:ring-primary-glow transition-all duration-200"
-                placeholder="e.g. teacher@opengrapes.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                autoComplete="email"
-                autoFocus
-                required
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label htmlFor="password-input" className="text-xs font-medium text-foreground/60 uppercase tracking-wider">
-                Password
-              </label>
-              <input
-                id="password-input"
-                type="password"
-                className="w-full px-4 py-3 rounded-xl bg-surface-light/60 border border-border/40 text-foreground placeholder-foreground/30 outline-none focus:border-primary focus:ring-2 focus:ring-primary-glow transition-all duration-200"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                required
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={!email.trim() || !password.trim() || isSubmitting}
-              className="w-full py-3.5 bg-primary hover:bg-primary-hover disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all duration-200 shadow-lg shadow-primary/20 hover:shadow-primary/40 cursor-pointer"
-            >
-              {isSubmitting ? (
-                <span className="inline-flex items-center gap-2">
-                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  Signing in...
-                </span>
-              ) : (
-                'Sign In'
-              )}
-            </button>
-          </form>
-
-          {/* Footer hint */}
-          <div className="text-center text-xs text-foreground/30 space-y-1">
-            <p>Demo accounts:</p>
-            <p>teacher@opengrapes.com / teacher123</p>
-            <p>riya@test.com / student123</p>
-          </div>
-        </div>
-      </div>
-    </main>
+    <div className="min-h-screen flex items-center justify-center bg-[#030712]">
+      <svg className="w-8 h-8 text-primary animate-spin" fill="none" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+      </svg>
+    </div>
   );
 }
 

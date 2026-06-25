@@ -7,8 +7,8 @@ dotenv.config();
 const LMS_JWT_SECRET = process.env.LMS_JWT_SECRET || 'fallback-secret-for-dev-only-change-this';
 
 export interface UserPayload {
-  userId: number;
-  role: 'teacher' | 'student';
+  userId: string;
+  role: 'teacher' | 'student' | 'ADMIN' | 'STUDENT';
   name: string;
   email?: string;
 }
@@ -92,8 +92,16 @@ export function requireRole(role: 'teacher' | 'student') {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
-    if (req.user.role !== role) {
-      return res.status(403).json({ error: `Forbidden: requires ${role} role` });
+    const userRole = req.user.role;
+    const isTeacher = userRole === 'teacher' || userRole === 'ADMIN';
+    const isStudent = userRole === 'student' || userRole === 'STUDENT';
+
+    if (role === 'teacher' && !isTeacher) {
+      return res.status(403).json({ error: 'Forbidden: requires teacher role' });
+    }
+
+    if (role === 'student' && !isStudent) {
+      return res.status(403).json({ error: 'Forbidden: requires student role' });
     }
 
     next();
