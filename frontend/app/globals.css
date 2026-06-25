@@ -1,0 +1,255 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: #030712;
+  --color-foreground: #f9fafb;
+  --color-surface: #13131F;
+  --color-surface-light: #1f2937;
+  --color-border: #2C2C42;
+  --color-primary: #6366f1;
+  --color-primary-hover: #818cf8;
+  --color-primary-glow: rgba(99, 102, 241, 0.25);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  --color-shell: #0D0D14;
+  --color-surface-hi: #1E1E30;
+  --color-accent: #5B4FD4;
+  --color-accent-hi: #7B6EF6;
+  --color-text: #E8E8F0;
+  --color-text-muted: #5A5A78;
+  --color-danger: #E5484D;
+  --color-success: #46A758;
+  --color-warning: #F5A623;
+
+  --animate-pulse-recording: pulse-recording 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+
+  @keyframes pulse-recording {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.85); }
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  overscroll-behavior: none;
+}
+
+body {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+/* LiveKit component overrides for dark theme */
+[data-lk-theme] {
+  --lk-bg: var(--color-surface);
+  --lk-bg2: var(--color-surface-light);
+}
+
+/* Custom premium styling for participant tiles */
+.lk-participant-tile {
+  border-radius: 12px !important;
+  border: 1px solid rgba(255, 255, 255, 0.05) !important;
+  background-color: rgba(17, 24, 39, 0.6) !important;
+  backdrop-filter: blur(8px);
+  overflow: hidden !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.3) !important;
+  container-type: inline-size; /* Added container-type for responsive font sizing */
+}
+
+/* Screen sharing tiles should not have rounded corners */
+.lk-participant-tile.lk-screen-share-tile {
+  border-radius: 0px !important;
+}
+
+.lk-participant-tile:hover {
+  border-color: rgba(99, 102, 241, 0.3) !important;
+  box-shadow: 0 10px 25px -5px rgba(99, 102, 241, 0.15) !important;
+}
+
+.lk-participant-tile[data-lk-speaking="true"] {
+  border-color: var(--color-primary) !important;
+  box-shadow: 0 0 0 2px var(--color-primary), 0 0 20px var(--color-primary-glow) !important;
+}
+
+.lk-participant-placeholder {
+  background: radial-gradient(circle at center, #1e1b4b 0%, #030712 100%) !important;
+  color: var(--color-primary) !important;
+}
+
+.lk-participant-metadata {
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0) 100%) !important;
+  padding: 12px 16px !important;
+}
+
+.lk-participant-metadata-item {
+  font-weight: 500 !important;
+  font-size: 0.85rem !important;
+  letter-spacing: 0.025em !important;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+.lk-audio-visualizer {
+  color: var(--color-primary) !important;
+}
+
+.lk-focus-layout {
+  border-radius: 20px !important;
+  overflow: hidden;
+}
+
+/* Custom Scrollbar for Sidebar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Premium Zoom-like UI when Participant Video is Muted */
+
+/* Hide default SVG avatar icon */
+.lk-participant-tile[data-lk-video-muted="true"] .lk-participant-placeholder svg {
+  display: none !important;
+}
+
+/* Center the metadata container and make it cover the entire tile */
+.lk-participant-tile[data-lk-video-muted="true"] .lk-participant-metadata {
+  position: absolute !important;
+  inset: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: transparent !important;
+  padding: 0 !important;
+  pointer-events: none !important;
+}
+
+/* Style the metadata item container holding name and microphone status */
+.lk-participant-tile[data-lk-video-muted="true"] .lk-participant-metadata-item:first-child {
+  background-color: transparent !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-shadow: none !important;
+}
+
+/* Center and scale the participant name like Zoom (using container query units for responsiveness) */
+.lk-participant-tile[data-lk-video-muted="true"] .lk-participant-name {
+  font-size: clamp(1.1rem, 8cqw, 2rem) !important;
+  font-weight: 600 !important;
+  color: #ffffff !important;
+  text-shadow: 0 4px 12px rgba(0, 0, 0, 0.6) !important;
+  text-align: center !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 90cqw;
+}
+
+/* Keep the microphone indicator in the bottom-left corner */
+.lk-participant-tile[data-lk-video-muted="true"] .lk-track-muted-indicator-microphone {
+  position: absolute !important;
+  bottom: 12px !important;
+  left: 12px !important;
+  width: 1.5rem !important;
+  height: 1.5rem !important;
+  background-color: rgba(17, 24, 39, 0.8) !important;
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  padding: 4px !important;
+  border-radius: 6px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  margin-inline-end: 0 !important;
+}
+
+/* Keep the connection quality indicator in the bottom-right corner */
+.lk-participant-tile[data-lk-video-muted="true"] .lk-connection-quality {
+  position: absolute !important;
+  bottom: 12px !important;
+  right: 12px !important;
+  background-color: rgba(17, 24, 39, 0.8) !important;
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 6px !important;
+  padding: 2px !important;
+}
+
+/* Tldraw canvas background contrast */
+.tl-container {
+  --tl-color-background: #f1f5f9 !important; /* Contrasting off-white canvas desk background */
+}
+
+.tl-theme__dark {
+  --tl-color-background: #090d16 !important; /* Contrasting dark mode canvas background */
+}
+
+/* Style the page frames to look like actual white sheets of paper */
+.tl-frame {
+  background-color: #ffffff !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08) !important;
+  border: 1px solid rgba(0, 0, 0, 0.15) !important;
+  border-radius: 4px !important;
+}
+
+.tl-theme__dark .tl-frame {
+  background-color: #1e293b !important; /* Dark mode "paper" sheet background */
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25) !important;
+}
+
+/* Hide Tldraw's native focus mode toggle dot button in the top-left corner */
+.tlui-focus-button,
+[title*="focus mode"],
+[aria-label*="focus mode"],
+[data-testid*="focus-mode"] {
+  display: none !important;
+}
+
+/* Hide Tldraw watermark branding */
+.tl-watermark,
+.tlui-watermark,
+.tl-watermark_SEE-LICENSE,
+[class*="watermark_SEE-LICENSE"],
+[data-testid="tl-watermark-unlicensed"] {
+  display: none !important;
+}
+
+/* Hide Tldraw toasts (just in case they are rendered elsewhere) */
+.tlui-toast-container,
+.tlui-toast,
+.tlui-toaster {
+  display: none !important;
+}
+
+/* Always show close controls on touch/hoverless devices */
+@media (hover: none) {
+  .touch-visible {
+    opacity: 1 !important;
+  }
+}
+
+/* Disable browser default touch actions inside Tldraw canvas container */
+.tl-container {
+  touch-action: none !important;
+}
+

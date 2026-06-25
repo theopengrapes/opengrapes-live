@@ -1,0 +1,31 @@
+name = "opengrapes-whiteboard-sync"
+main = "worker/worker.ts"
+compatibility_date = "2025-05-08"
+compatibility_flags = ["nodejs_compat"]
+account_id = "3769189be78c01f88063383ca4a5d7d1"
+
+[durable_objects]
+bindings = [
+  { name = "TLDRAW_DURABLE_OBJECT", class_name = "TldrawDurableObject" },
+  { name = "TRANSCRIPT_DURABLE_OBJECT", class_name = "TranscriptDurableObject" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["TldrawDurableObject"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["TranscriptDurableObject"]
+
+[[r2_buckets]]
+binding = 'TLDRAW_BUCKET'
+bucket_name = 'opengrapes-whiteboard-sync'
+preview_bucket_name = 'opengrapes-whiteboard-sync-preview'
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+[vars]
+WORKER_API_SECRET = "8b3b4f62e8485db0f8d951f251c6ee37b8ea0199dc6a9db36e768e14cb7bf6a1"

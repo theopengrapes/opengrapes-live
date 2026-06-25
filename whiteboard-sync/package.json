@@ -1,0 +1,21 @@
+{
+  "name": "whiteboard-sync",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@tldraw/sync-core": "^5.1.0",
+    "@tldraw/tlschema": "^5.1.0",
+    "itty-router": "^5.0.18",
+    "lodash.throttle": "^4.1.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260617.1",
+    "typescript": "^5.0.0",
+    "wrangler": "^3.50.0"
+  }
+}

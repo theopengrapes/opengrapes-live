@@ -1,0 +1,15 @@
+port: 7880
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: true
+  node_ip: 192.168.1.22
+
+keys:
+  devkey: secret
+
+logging:
+  level: debug
+
+turn:
+  enabled: false   # Using OpenRelay externally, not LiveKit's built-in TURN
