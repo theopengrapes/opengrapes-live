@@ -150,7 +150,8 @@ export default function Whiteboard({
   // useSync connects to our self-hosted Cloudflare worker sync endpoint
   const wsUri = SYNC_WORKER_URL.replace(/^http/, 'ws');
   const store = useSync({
-    uri: `${wsUri}/api/connect/${roomName}?sessionId=${clientId}`,
+    uri: `${wsUri}/api/connect/${roomName}?clientSessionId=${clientId}`,
+
     assets: multiplayerAssetStore,
   });
 
