@@ -79,13 +79,43 @@ export function addHandDrawnPage(editor: Editor) {
 
   const y = last ? last.y + (last.props.h as number ?? PAGE_H) + GAP : 0;
   const x = last ? last.x : 0;
+  
+  const frameId = createShapeId();
+  const bgId = createShapeId();
 
-  editor.createShape({
-    type: 'frame',
-    x,
-    y,
-    props: { w: PAGE_W, h: PAGE_H, name: `Page ${getNextPageIndex(editor) + 1}` },
-    meta: { pageIndex: getNextPageIndex(editor) },
+  editor.run(() => {
+    editor.createShape({
+      id: frameId,
+      type: 'frame',
+      x,
+      y,
+      props: { w: PAGE_W, h: PAGE_H, name: `Page ${getNextPageIndex(editor) + 1}` },
+      meta: { pageIndex: getNextPageIndex(editor) },
+    });
+
+    editor.createShape({
+      id: bgId,
+      type: 'geo',
+      parentId: frameId,
+      x: 0,
+      y: 0,
+      props: {
+        w: PAGE_W,
+        h: PAGE_H,
+        geo: 'rectangle',
+        color: 'white',
+        fill: 'solid',
+        dash: 'draw',
+        size: 'm',
+        font: 'draw',
+        align: 'middle',
+      },
+      // lock the background so it can't be accidentally moved
+      isLocked: true,
+    });
+    
+    // Send background to back
+    editor.sendToBack([bgId]);
   });
 }
 

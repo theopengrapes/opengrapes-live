@@ -71,17 +71,16 @@ const multiplayerAssetStore: TLAssetStore = {
 };
 
 // Custom components to hide native PageMenu, MainMenu, SharePanel, PeopleMenu, and HelperButtons
-const whiteboardComponents = {
-  PageMenu: () => null,
-  MainMenu: () => null,
-  SharePanel: () => null,
-  PeopleMenu: () => null,
-  HelperButtons: () => null,
-  Toasts: () => null,
-  Toolbar: () => null,
-  StylePanel: () => null,
-  NavigationPanel: () => null,
-};
+  const whiteboardComponents = {
+    PageMenu: () => null,
+    SharePanel: () => null,
+    PeopleMenu: () => null,
+    HelperButtons: () => null,
+    Toasts: () => null,
+    Toolbar: () => null,
+    StylePanel: () => null,
+    NavigationPanel: () => null,
+  };
 
 // Custom overrides to remove export, copy-as, upload-media, insert-embed actions, and toggle-focus-mode action
 const whiteboardOverrides = {
@@ -372,6 +371,7 @@ export default function Whiteboard({
     editor.user.updateUserPreferences({
       name: nameToSet,
       areKeyboardShortcutsEnabled: targetWritable,
+      isDarkMode: false,
     });
   }, [editor, userName, isTeacher, isWritable]);
 
