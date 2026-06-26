@@ -257,8 +257,8 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
         const camera = editor.getCamera();
         if (camera) {
           ctx.scale(dpr, dpr);
-          ctx.translate(camera.x, camera.y);
           ctx.scale(camera.z, camera.z);
+          ctx.translate(camera.x, camera.y);
         }
       }
 
@@ -274,22 +274,11 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
         let alpha = 1.0;
         if (stroke.ended) {
           const elapsed = stroke.endTime !== null ? (now - stroke.endTime) : 0;
-          
-          // Delete immediately if tldraw store shape has arrived and skipFade is triggered
-          if (stroke.skipFade === true) {
+          if (stroke.skipFade === true || elapsed >= 300) {
             strokesRef.current.delete(strokeId);
             return;
           }
-          
-          // Safety timeout: if sync takes >3s, fade out over 300ms and delete
-          if (elapsed >= 3300) {
-            strokesRef.current.delete(strokeId);
-            return;
-          } else if (elapsed > 3000) {
-            alpha = 1.0 - (elapsed - 3000) / 300;
-          } else {
-            alpha = 1.0; // Hold at 100% opacity until shape arrives
-          }
+          alpha = alpha * (1 - elapsed / 300);
         }
 
         ctx.save();

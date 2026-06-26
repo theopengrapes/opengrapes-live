@@ -87,7 +87,7 @@ export function useStrokeCapture({
           const size = editor.getStyleForNextShape(DefaultSizeStyle);
           // Highlight tool uses semi-transparency; draw uses opaque
           const opacity = tool === 'highlight' ? '0.35' : '1.0';
-          const pressure = 0.5; // Force uniform pressure to match mouse rendering
+          const pressure = editor.inputs.pointerInfo?.pressure ?? 0.5;
 
           const startPoint = { x: point.x, y: point.y, pressure, t: 0 };
           pointsBufferRef.current = [startPoint];
@@ -124,7 +124,7 @@ export function useStrokeCapture({
         lastPointRef.current = { x: point.x, y: point.y };
 
         if (isDrawTool && strokeIdRef.current) {
-          const pressure = 0.5; // Force uniform pressure to match mouse rendering
+          const pressure = editor.inputs.pointerInfo?.pressure ?? 0.5;
           const t = Date.now() - startTimeRef.current;
           pointsBufferRef.current.push({ x: point.x, y: point.y, pressure, t });
         } 
