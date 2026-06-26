@@ -1653,6 +1653,8 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
                   localParticipant={localParticipant}
                   isSidebarOpen={!isFocusMode}
                   isMobile={isMobile}
+                  globalWhiteboardAllowed={globalWhiteboardAllowed}
+                  allowedWhiteboardStudents={allowedWhiteboardStudents}
                 />
 
 
@@ -1993,6 +1995,8 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
               localParticipant={localParticipant}
               isSidebarOpen={!isFocusMode}
               isMobile={false}
+              globalWhiteboardAllowed={globalWhiteboardAllowed}
+              allowedWhiteboardStudents={allowedWhiteboardStudents}
             />
 
           </div>

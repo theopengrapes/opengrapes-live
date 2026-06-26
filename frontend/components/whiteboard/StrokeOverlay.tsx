@@ -172,8 +172,17 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
             ?.some((s: any) => s.meta?.strokeId === msg.strokeId && s.props?.isComplete !== false);
 
           if (isShapeInStoreComplete) {
-            stroke.transitioning = true;
-            stroke.transitionStartTime = now;
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                const s = strokesRef.current.get(msg.strokeId);
+                if (s) {
+                  s.transitioning = true;
+                  if (!s.transitionStartTime) {
+                    s.transitionStartTime = Date.now();
+                  }
+                }
+              });
+            });
           }
         }
       }
@@ -214,10 +223,17 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
           if (strokeId) {
             const activeStroke = strokesRef.current.get(strokeId);
             if (activeStroke && (activeStroke.ended || shape.props?.isComplete !== false)) {
-              activeStroke.transitioning = true;
-              if (!activeStroke.transitionStartTime) {
-                activeStroke.transitionStartTime = Date.now();
-              }
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  const s = strokesRef.current.get(strokeId);
+                  if (s) {
+                    s.transitioning = true;
+                    if (!s.transitionStartTime) {
+                      s.transitionStartTime = Date.now();
+                    }
+                  }
+                });
+              });
             }
           }
         });
@@ -230,10 +246,17 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
           if (strokeId) {
             const activeStroke = strokesRef.current.get(strokeId);
             if (activeStroke && (activeStroke.ended || curr.props?.isComplete !== false)) {
-              activeStroke.transitioning = true;
-              if (!activeStroke.transitionStartTime) {
-                activeStroke.transitionStartTime = Date.now();
-              }
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  const s = strokesRef.current.get(strokeId);
+                  if (s) {
+                    s.transitioning = true;
+                    if (!s.transitionStartTime) {
+                      s.transitionStartTime = Date.now();
+                    }
+                  }
+                });
+              });
             }
           }
         });
@@ -315,7 +338,7 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
             strokesRef.current.delete(strokeId);
             return;
           }
-          alpha = 1.0 - elapsed / 150;
+          alpha = 1.0 - elapsed / 1000;
         } else if (stroke.ended) {
           if (stroke.waitingForStore) {
             const elapsed = stroke.endTime !== null ? (now - stroke.endTime) : 0;

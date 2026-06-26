@@ -10,6 +10,8 @@ interface WhiteboardProps {
   localParticipant?: any;
   isSidebarOpen?: boolean;
   isMobile?: boolean;
+  globalWhiteboardAllowed?: boolean;
+  allowedWhiteboardStudents?: Record<string, boolean>;
 }
 
 // Tldraw uses browser APIs (window, document) that crash during SSR.
