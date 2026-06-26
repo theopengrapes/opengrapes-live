@@ -29,6 +29,8 @@ interface ActiveStroke {
   skipFade?: boolean;
   waitingForStore?: boolean;
   warningLogged?: boolean;
+  transitioning?: boolean;
+  transitionStartTime?: number;
 }
 
 interface ActiveEraser {
@@ -170,11 +172,8 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
             ?.some((s: any) => s.meta?.strokeId === msg.strokeId && s.props?.isComplete !== false);
 
           if (isShapeInStoreComplete) {
-            requestAnimationFrame(() => {
-              requestAnimationFrame(() => {
-                strokesRef.current.delete(msg.strokeId);
-              });
-            });
+            stroke.transitioning = true;
+            stroke.transitionStartTime = now;
           }
         }
       }
@@ -214,15 +213,11 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
           const strokeId = shape.meta?.strokeId;
           if (strokeId) {
             const activeStroke = strokesRef.current.get(strokeId);
-            if (activeStroke && activeStroke.ended && shape.props?.isComplete !== false) {
-              // Do NOT delete immediately. Instead, schedule deletion after a RAF delay
-              // (using two nested requestAnimationFrames) to ensure tldraw has had at least
-              // one full browser paint cycle to draw the shape, avoiding any flicker.
-              requestAnimationFrame(() => {
-                requestAnimationFrame(() => {
-                  strokesRef.current.delete(strokeId);
-                });
-              });
+            if (activeStroke && (activeStroke.ended || shape.props?.isComplete !== false)) {
+              activeStroke.transitioning = true;
+              if (!activeStroke.transitionStartTime) {
+                activeStroke.transitionStartTime = Date.now();
+              }
             }
           }
         });
@@ -234,12 +229,11 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
           const strokeId = curr.meta?.strokeId;
           if (strokeId) {
             const activeStroke = strokesRef.current.get(strokeId);
-            if (activeStroke && activeStroke.ended && curr.props?.isComplete !== false) {
-              requestAnimationFrame(() => {
-                requestAnimationFrame(() => {
-                  strokesRef.current.delete(strokeId);
-                });
-              });
+            if (activeStroke && (activeStroke.ended || curr.props?.isComplete !== false)) {
+              activeStroke.transitioning = true;
+              if (!activeStroke.transitionStartTime) {
+                activeStroke.transitionStartTime = Date.now();
+              }
             }
           }
         });
@@ -315,7 +309,14 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
         if (playPoints.length === 0) return;
 
         let alpha = 1.0;
-        if (stroke.ended) {
+        if (stroke.transitioning) {
+          const elapsed = stroke.transitionStartTime !== undefined ? (now - stroke.transitionStartTime) : 0;
+          if (elapsed >= 150) {
+            strokesRef.current.delete(strokeId);
+            return;
+          }
+          alpha = 1.0 - elapsed / 150;
+        } else if (stroke.ended) {
           if (stroke.waitingForStore) {
             const elapsed = stroke.endTime !== null ? (now - stroke.endTime) : 0;
             if (elapsed >= 2000) {
