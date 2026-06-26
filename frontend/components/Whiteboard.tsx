@@ -626,22 +626,33 @@ export default function Whiteboard({
   useCursorBroadcast({ editor, localParticipant, isWritable, userName: userName || 'Participant', isTeacher });
 
   return (
-    <div className="w-full h-full relative touch-none" style={{ touchAction: 'none' }}>
-      <Tldraw 
-        store={store} 
+    <div
+      className="w-full h-full relative touch-none"
+      style={{ touchAction: "none" }}
+    >
+      <Tldraw
+        store={store}
         onMount={handleMount}
         components={whiteboardComponents}
         overrides={whiteboardOverrides}
-        overlayUtils={[HiddenCollaboratorCursorOverlayUtil, HiddenCollaboratorHintOverlayUtil]}
+        overlayUtils={[
+          HiddenCollaboratorCursorOverlayUtil,
+          HiddenCollaboratorHintOverlayUtil,
+        ]}
+        licenseKey="tldraw-2026-10-04/WyJuVUp6Z2RVOSIsWyIqIl0sMTYsIjIwMjYtMTAtMDQiXQ.zXszL8E54vL/Z2ZhQnXogE9n9sFkAz4jBMrR81a4ILvlXAQCR6H1J3tk/SXzk73DrP8QmDcwm2AUbsMWpstNuQ"
       />
-
-
 
       {/* Read-Only Mode Status Badge for Students */}
       {!isTeacher && !isWritable && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 pointer-events-none select-none animate-in fade-in duration-200">
           <div className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0c101d]/90 border border-amber-500/30 text-amber-500 backdrop-blur-md rounded-full text-xs font-semibold shadow-lg">
-            <svg className="w-3.5 h-3.5 animate-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <svg
+              className="w-3.5 h-3.5 animate-pulse"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
               <path d="M7 11V7a5 5 0 0110 0v4" />
             </svg>
@@ -651,19 +662,19 @@ export default function Whiteboard({
       )}
 
       {/* Stroke Overlay Canvas */}
-      <StrokeOverlay 
-        editor={editor} 
-        room={room} 
-        localParticipant={localParticipant} 
+      <StrokeOverlay
+        editor={editor}
+        room={room}
+        localParticipant={localParticipant}
       />
 
       {/* Empty Whiteboard Placeholder Overlay */}
       <EmptyWhiteboardOverlay editor={editor} isTeacher={isTeacher} />
 
       {/* Floating "Resume Following Teacher" Button for Students */}
-      <ResumeFollowingButton 
-        editor={editor} 
-        isTeacher={isTeacher} 
+      <ResumeFollowingButton
+        editor={editor}
+        isTeacher={isTeacher}
         isSidebarOpen={isSidebarOpen}
         isMobile={isMobile}
       />
