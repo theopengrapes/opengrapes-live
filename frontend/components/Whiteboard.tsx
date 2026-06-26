@@ -71,16 +71,17 @@ const multiplayerAssetStore: TLAssetStore = {
 };
 
 // Custom components to hide native PageMenu, MainMenu, SharePanel, PeopleMenu, and HelperButtons
-  const whiteboardComponents = {
-    PageMenu: () => null,
-    SharePanel: () => null,
-    PeopleMenu: () => null,
-    HelperButtons: () => null,
-    Toasts: () => null,
-    Toolbar: () => null,
-    StylePanel: () => null,
-    NavigationPanel: () => null,
-  };
+const whiteboardComponents = {
+  PageMenu: () => null,
+  MainMenu: () => null,
+  SharePanel: () => null,
+  PeopleMenu: () => null,
+  HelperButtons: () => null,
+  Toasts: () => null,
+  Toolbar: () => null,
+  StylePanel: () => null,
+  NavigationPanel: () => null,
+};
 
 // Custom overrides to remove export, copy-as, upload-media, insert-embed actions, and toggle-focus-mode action
 const whiteboardOverrides = {
@@ -371,7 +372,6 @@ export default function Whiteboard({
     editor.user.updateUserPreferences({
       name: nameToSet,
       areKeyboardShortcutsEnabled: targetWritable,
-      colorScheme: 'light',
     });
   }, [editor, userName, isTeacher, isWritable]);
 
@@ -396,128 +396,7 @@ export default function Whiteboard({
     }
   }, [editor, isTeacher, isWritable]);
 
-  // Camera and zoom confinement logic
-  useEffect(() => {
-    if (!editor) return;
 
-    let isClamping = false;
-    const maxYRef = { current: 810 };
-
-    const updateMaxY = () => {
-      const frames = editor.getCurrentPageShapes().filter((s: any) => s.type === 'frame');
-      maxYRef.current = frames.length > 0
-        ? frames.reduce((max: number, f: any) => {
-            const h = (f.props.h as number) ?? 810;
-            return Math.max(max, f.y + h);
-          }, 0)
-        : 810;
-    };
-
-    const clampCamera = () => {
-      if (isClamping) return;
-
-      // Skip clamping if the user is a participant and currently following the teacher
-      const instanceState = editor.getInstanceState();
-      if (!isTeacher && instanceState?.followingUserId) {
-        return;
-      }
-
-      const camera = editor.getCamera();
-      const screen = editor.getViewportScreenBounds();
-      if (!screen || screen.width === 0 || screen.height === 0) return;
-
-      // 1. Calculate boundaries (100px padding from all 4 directions)
-      const minCanvasX = -100;
-      const maxCanvasX = 1440 + 100;
-
-      const minCanvasY = -100;
-      const maxCanvasY = maxYRef.current + 100;
-
-      // 2. Clamp Zoom
-      const minZoomX = screen.width / (maxCanvasX - minCanvasX);
-      const minZoomY = screen.height / (maxCanvasY - minCanvasY);
-      
-      // We clamp zoom to be at least minZoomX and minZoomY so they can't zoom out past the pages
-      const MAX_ZOOM = 4;
-      let clampedZ = Math.max(camera.z, minZoomX, minZoomY);
-      clampedZ = Math.min(clampedZ, MAX_ZOOM);
-
-      // 3. Clamp Positions
-      const viewportWidthInCanvas = screen.width / clampedZ;
-      const viewportHeightInCanvas = screen.height / clampedZ;
-
-      // Current viewport top-left in page (canvas) coordinates
-      const viewX = -camera.x;
-      const viewY = -camera.y;
-
-      let clampedViewX = viewX;
-      if (viewportWidthInCanvas > (maxCanvasX - minCanvasX)) {
-        clampedViewX = minCanvasX + (maxCanvasX - minCanvasX - viewportWidthInCanvas) / 2;
-      } else {
-        clampedViewX = Math.max(minCanvasX, Math.min(maxCanvasX - viewportWidthInCanvas, viewX));
-      }
-
-      let clampedViewY = viewY;
-      if (viewportHeightInCanvas > (maxCanvasY - minCanvasY)) {
-        clampedViewY = minCanvasY + (maxCanvasY - minCanvasY - viewportHeightInCanvas) / 2;
-      } else {
-        clampedViewY = Math.max(minCanvasY, Math.min(maxCanvasY - viewportHeightInCanvas, viewY));
-      }
-
-      const clampedX = -clampedViewX;
-      const clampedY = -clampedViewY;
-
-      // 4. Update if changed
-      const EPSILON = 0.01;
-      if (
-        Math.abs(camera.x - clampedX) > EPSILON ||
-        Math.abs(camera.y - clampedY) > EPSILON ||
-        Math.abs(camera.z - clampedZ) > EPSILON
-      ) {
-        isClamping = true;
-        try {
-          editor.setCamera({ x: clampedX, y: clampedY, z: clampedZ });
-        } finally {
-          isClamping = false;
-        }
-      }
-    };
-
-    // Run clamp on mount or whenever editor changes
-    updateMaxY();
-    clampCamera();
-
-    // Invalidate/update cache and re-clamp when frames change in document
-    const cleanupFrames = editor.store.listen(
-      (event: any) => {
-        const hasAddedFrame = event.changes.added && 
-          Object.values(event.changes.added).some((s: any) => s.typeName === 'shape' && s.type === 'frame');
-        const hasRemovedFrame = event.changes.removed && 
-          Object.values(event.changes.removed).some((s: any) => s.typeName === 'shape' && s.type === 'frame');
-        const hasUpdatedFrame = event.changes.updated && 
-          Object.values(event.changes.updated).some(([prev, curr]: any) => curr.typeName === 'shape' && curr.type === 'frame');
-
-        if (hasAddedFrame || hasRemovedFrame || hasUpdatedFrame) {
-          updateMaxY();
-          clampCamera();
-        }
-      },
-      { scope: 'document' }
-    );
-
-    // clampCamera only re-runs when the LOCAL user pans/zooms their own camera.
-    const cleanupCamera = editor.store.listen(
-      () => {
-        clampCamera();
-      },
-      { scope: 'session', source: 'user' }
-    );
-
-    return () => {
-      cleanupFrames();
-      cleanupCamera();
-    };
-  }, [editor]);
 
   // Enforce shape selection permissions:
   // 1. Read-only students cannot select any shapes on the whiteboard.
@@ -633,6 +512,7 @@ export default function Whiteboard({
         components={whiteboardComponents}
         overrides={whiteboardOverrides}
         overlayUtils={[HiddenCollaboratorCursorOverlayUtil, HiddenCollaboratorHintOverlayUtil]}
+        licenseKey="tldraw-2026-10-04/WyJuVUp6Z2RVOSIsWyIqIl0sMTYsIjIwMjYtMTAtMDQiXQ.zXszL8E54vL/Z2ZhQnXogE9n9sFkAz4jBMrR81a4ILvlXAQCR6H1J3tk/SXzk73DrP8QmDcwm2AUbsMWpstNuQ"
       />
 
 
