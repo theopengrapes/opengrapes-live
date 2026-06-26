@@ -371,7 +371,7 @@ export default function Whiteboard({
     editor.user.updateUserPreferences({
       name: nameToSet,
       areKeyboardShortcutsEnabled: targetWritable,
-      isDarkMode: false,
+      colorScheme: 'light',
     });
   }, [editor, userName, isTeacher, isWritable]);
 
