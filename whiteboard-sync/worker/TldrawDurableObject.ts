@@ -140,8 +140,9 @@ export class TldrawDurableObject extends DurableObject {
 	}
 
 	async handleConnect(request: IRequest) {
-		const sessionId = request.query.sessionId as string
+		const sessionId = (request.query.clientSessionId || request.query.sessionId) as string
 		if (!sessionId) return error(400, 'Missing sessionId')
+
 
 		const { 0: clientWebSocket, 1: serverWebSocket } = new WebSocketPair()
 		this.ctx.acceptWebSocket(serverWebSocket)
