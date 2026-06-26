@@ -172,6 +172,20 @@ export class TldrawDurableObject extends DurableObject {
 		if (!sessionId) return
 
 		this.sessionIdToWs.set(sessionId, ws)
+
+		// Check for warmup message explicitly
+		if (typeof message === 'string') {
+			try {
+				const parsed = JSON.parse(message)
+				if (parsed && parsed.type === 'warmup') {
+					console.log('[TldrawDurableObject] Warmup message received. Waking up DO.')
+					return
+				}
+			} catch (e) {
+				// Ignore JSON parsing errors for binary / non-JSON protocol messages
+			}
+		}
+
 		this.getOrCreateRoom().handleSocketMessage(sessionId, message)
 	}
 

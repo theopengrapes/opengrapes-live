@@ -155,6 +155,36 @@ export default function Whiteboard({
     assets: multiplayerAssetStore,
   });
 
+  // Warm up DO on session start
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const OriginalWebSocket = window.WebSocket;
+
+    class WarmupWebSocket extends OriginalWebSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        
+        const urlStr = url.toString();
+        if (urlStr.includes('/api/connect/')) {
+          this.addEventListener('open', () => {
+            try {
+              this.send(JSON.stringify({ type: 'warmup' }));
+              console.log('[Whiteboard] Sent warmup message to Durable Object.');
+            } catch (err) {
+              console.error('[Whiteboard] Failed to send warmup message:', err);
+            }
+          });
+        }
+      }
+    }
+
+    window.WebSocket = WarmupWebSocket as any;
+
+    return () => {
+      window.WebSocket = OriginalWebSocket;
+    };
+  }, []);
 
   const [editor, setEditor] = useState<any>(null);
 
@@ -196,15 +226,19 @@ export default function Whiteboard({
       if (source === 'remote') {
         return shape;
       }
-      // Don't overwrite if it already has createdBy (e.g. synced from another user)
-      if (shape.meta?.createdBy) {
+      // Don't overwrite if it already has strokeId (e.g. synced from another user)
+      if (shape.meta?.strokeId) {
         return shape;
       }
       const metaUpdate: any = {
         ...shape.meta,
         createdBy: localParticipantRef.current?.identity ?? 'unknown',
       };
-      if (activeStrokeIdRef.current !== null) {
+      if (shape.type === 'draw') {
+        const strokeId = `${localParticipantRef.current?.identity ?? 'unknown'}-${Date.now()}`;
+        metaUpdate.strokeId = strokeId;
+        activeStrokeIdRef.current = strokeId;
+      } else if (activeStrokeIdRef.current !== null) {
         metaUpdate.strokeId = activeStrokeIdRef.current;
       }
       return {
@@ -621,6 +655,13 @@ export default function Whiteboard({
     };
   }, [editor]);
 
+  const getShapeVisibility = useCallback((shape: any) => {
+    if (!isTeacher && shape.meta?.strokeId && shape.props?.isComplete === false) {
+      return 'hidden';
+    }
+    return 'inherit';
+  }, [isTeacher]);
+
   // Capture active writer coordinates (teacher or writable students)
   useStrokeCapture({ editor, localParticipant, isWritable, activeStrokeIdRef });
   useCursorBroadcast({ editor, localParticipant, isWritable, userName: userName || 'Participant', isTeacher });
@@ -639,6 +680,7 @@ export default function Whiteboard({
           HiddenCollaboratorCursorOverlayUtil,
           HiddenCollaboratorHintOverlayUtil,
         ]}
+        getShapeVisibility={getShapeVisibility}
         licenseKey="tldraw-2026-10-04/WyJuVUp6Z2RVOSIsWyIqIl0sMTYsIjIwMjYtMTAtMDQiXQ.zXszL8E54vL/Z2ZhQnXogE9n9sFkAz4jBMrR81a4ILvlXAQCR6H1J3tk/SXzk73DrP8QmDcwm2AUbsMWpstNuQ"
       />
 

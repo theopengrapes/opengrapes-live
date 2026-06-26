@@ -27,6 +27,8 @@ interface ActiveStroke {
   endTime: number | null;
   bufferDelay: number;
   skipFade?: boolean;
+  waitingForStore?: boolean;
+  warningLogged?: boolean;
 }
 
 interface ActiveEraser {
@@ -160,6 +162,20 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
         if (stroke) {
           stroke.ended = true;
           stroke.endTime = now;
+          stroke.waitingForStore = true;
+
+          // Check if the shape already exists and is complete in tldraw store
+          const isShapeInStoreComplete = editor
+            ?.getCurrentPageShapes()
+            ?.some((s: any) => s.meta?.strokeId === msg.strokeId && s.props?.isComplete !== false);
+
+          if (isShapeInStoreComplete) {
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                strokesRef.current.delete(msg.strokeId);
+              });
+            });
+          }
         }
       }
 
@@ -189,14 +205,41 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
     if (!editor) return;
 
     const cleanupStoreListener = editor.store.listen((event: any) => {
-      if ((event.source === 'remote' || event.source === 'user') && event.changes.added) {
+      const isRemoteOrUser = event.source === 'remote' || event.source === 'user';
+      if (!isRemoteOrUser) return;
+
+      // Handle added shapes (e.g. if shape is added fully complete or already ended)
+      if (event.changes.added) {
         Object.values(event.changes.added).forEach((shape: any) => {
           const strokeId = shape.meta?.strokeId;
           if (strokeId) {
             const activeStroke = strokesRef.current.get(strokeId);
-            if (activeStroke) {
-              activeStroke.ended = true;
-              activeStroke.skipFade = true;
+            if (activeStroke && activeStroke.ended && shape.props?.isComplete !== false) {
+              // Do NOT delete immediately. Instead, schedule deletion after a RAF delay
+              // (using two nested requestAnimationFrames) to ensure tldraw has had at least
+              // one full browser paint cycle to draw the shape, avoiding any flicker.
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  strokesRef.current.delete(strokeId);
+                });
+              });
+            }
+          }
+        });
+      }
+
+      // Handle updated shapes (e.g. when draft shape is finalized on pointer_up)
+      if (event.changes.updated) {
+        Object.values(event.changes.updated).forEach(([prev, curr]: any) => {
+          const strokeId = curr.meta?.strokeId;
+          if (strokeId) {
+            const activeStroke = strokesRef.current.get(strokeId);
+            if (activeStroke && activeStroke.ended && curr.props?.isComplete !== false) {
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  strokesRef.current.delete(strokeId);
+                });
+              });
             }
           }
         });
@@ -273,12 +316,28 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
 
         let alpha = 1.0;
         if (stroke.ended) {
-          const elapsed = stroke.endTime !== null ? (now - stroke.endTime) : 0;
-          if (stroke.skipFade === true || elapsed >= 300) {
-            strokesRef.current.delete(strokeId);
-            return;
+          if (stroke.waitingForStore) {
+            const elapsed = stroke.endTime !== null ? (now - stroke.endTime) : 0;
+            if (elapsed >= 5000) {
+              // Log warning once at 5000ms
+              if (!stroke.warningLogged) {
+                console.warn(`[StrokeOverlay] Warning: tldraw shape for stroke ${strokeId} not received after 5000ms. Pulsing remote stroke.`);
+                stroke.warningLogged = true;
+              }
+              // Pulse opacity between 0.6 and 1.0 using a sine wave with 1.5s period
+              const pulse = 0.8 + 0.2 * Math.sin((now - (stroke.endTime! + 5000)) * (2 * Math.PI / 1500));
+              alpha = pulse;
+            } else {
+              alpha = 1.0; // Freeze at full opacity while waiting for tldraw store sync
+            }
+          } else {
+            const elapsed = stroke.endTime !== null ? (now - stroke.endTime) : 0;
+            if (stroke.skipFade === true || elapsed >= 300) {
+              strokesRef.current.delete(strokeId);
+              return;
+            }
+            alpha = alpha * (1 - elapsed / 300);
           }
-          alpha = alpha * (1 - elapsed / 300);
         }
 
         ctx.save();
