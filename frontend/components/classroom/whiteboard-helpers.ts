@@ -118,7 +118,7 @@ export async function importPdf(
     : 0;
 
   const ops: Array<() => void> = [];
-  const SYNC_WORKER_URL = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+  const SYNC_WORKER_URL = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
 
   for (let i = 1; i <= pdf.numPages; i++) {
     if (onProgress) {
@@ -233,7 +233,7 @@ export async function importPdf(
  * a single frame shape matching its dimensions, containing the image.
  */
 export async function importImage(editor: Editor, file: File) {
-  const SYNC_WORKER_URL = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+  const SYNC_WORKER_URL = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
   const PAGE_W = 1440;
   const PAGE_H = 810;
   const CANVAS_W = 2880;

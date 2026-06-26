@@ -45,7 +45,7 @@ interface WhiteboardProps {
   isMobile?: boolean;
 }
 
-const SYNC_WORKER_URL = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+const SYNC_WORKER_URL = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
 
 // Custom asset store to upload images/videos directly to the Cloudflare Worker (which puts them in R2)
 const multiplayerAssetStore: TLAssetStore = {

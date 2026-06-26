@@ -1078,7 +1078,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
 
           if (pdf && addedPageCount > 0) {
             const pdfBlob = pdf.output('blob');
-            const SYNC_WORKER_URL = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+            const SYNC_WORKER_URL = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
             const uploadUrl = `${SYNC_WORKER_URL}/api/pdf/${roomName}`;
 
             await fetch(uploadUrl, {
@@ -1248,7 +1248,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
           if (msg.allowedWhiteboardStudents !== undefined) setAllowedWhiteboardStudents(msg.allowedWhiteboardStudents);
           if (msg.allowedScreenShareStudents !== undefined) setAllowedScreenShareStudents(msg.allowedScreenShareStudents);
         } else if (msg.type === 'NOTES_EXPORTED') {
-          const SYNC_WORKER_URL = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+          const SYNC_WORKER_URL = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
           setExportedPdfUrl(`${SYNC_WORKER_URL}/api/pdf/${roomName}`);
         } else if (msg.type === 'CHAT_MESSAGE') {
           setMessages((prev) => [...prev, msg]);
@@ -1416,7 +1416,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
     let active = true;
     const checkPdf = async () => {
       try {
-        const SYNC_WORKER_URL = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+        const SYNC_WORKER_URL = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
         const res = await fetch(`${SYNC_WORKER_URL}/api/pdf/${roomName}`, { method: 'HEAD' });
         if (res.ok && active) {
           setExportedPdfUrl(`${SYNC_WORKER_URL}/api/pdf/${roomName}`);

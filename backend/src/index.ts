@@ -164,7 +164,7 @@ app.post('/api/exchange-lms-token', async (req, res) => {
         liveSession = insertRes.rows[0];
 
         // Trigger Sync Worker DO initialization
-        const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+        const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
         const workerSecret = process.env.WORKER_API_SECRET || '';
         try {
           const batchRes = await db.query('SELECT name FROM "Batch" WHERE id = $1', [batchId]);
@@ -469,7 +469,7 @@ app.post('/api/end-class', requireLMSOrClassroomAuth, requireRole('teacher'), as
 
     if (activeSession && activeSession.roomId) {
       const sessionId = activeSession.roomId;
-      const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+      const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
       const workerSecret = process.env.WORKER_API_SECRET || '';
 
       // 1. Fetch transcript segments and rolling summary from DO
@@ -882,7 +882,7 @@ app.post('/api/transcribe', requireClassroomAuth, upload.single('audio'), async 
 
     // Skip saving empty transcripts or transcription junk placeholders like "[blank_audio]"
     if (transcriptText.length > 0 && !/^\[.*\]$/.test(transcriptText)) {
-      const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+      const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
       const workerSecret = process.env.WORKER_API_SECRET || '';
 
       await fetch(`${workerUrl}/api/transcript/${sessionId}/segment`, {
@@ -931,7 +931,7 @@ app.post('/api/doubt', requireClassroomAuth, async (req, res) => {
 
   try {
     // 1. Fetch class transcript segments and rolling summary from DO
-    const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+    const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
     const workerSecret = process.env.WORKER_API_SECRET || '';
 
     let segments = [];
@@ -1169,7 +1169,7 @@ app.post('/api/summary/trigger', requireClassroomAuth, async (req, res) => {
   }
 
   try {
-    const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+    const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
     const workerSecret = process.env.WORKER_API_SECRET || '';
 
     const doRes = await fetch(`${workerUrl}/api/transcript/${sessionId}/trigger-summary`, {
@@ -1195,7 +1195,7 @@ app.post('/api/summary/trigger', requireClassroomAuth, async (req, res) => {
 app.get('/api/summary/:sessionId', requireClassroomAuth, async (req, res) => {
   const { sessionId } = req.params;
   try {
-    const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+    const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
     const workerSecret = process.env.WORKER_API_SECRET || '';
 
     let rollingSummary = '';
@@ -1234,7 +1234,7 @@ app.get('/api/summary/:sessionId', requireClassroomAuth, async (req, res) => {
 app.get('/api/transcript/:sessionId', requireClassroomAuth, async (req, res) => {
   const { sessionId } = req.params;
   try {
-    const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+    const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
     const workerSecret = process.env.WORKER_API_SECRET || '';
 
     const doRes = await fetch(`${workerUrl}/api/transcript/${sessionId}/data`, {
@@ -1297,7 +1297,7 @@ app.post('/api/transcript/:sessionId/topic', requireClassroomAuth, requireRole('
   }
 
   try {
-    const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+    const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
     const workerSecret = process.env.WORKER_API_SECRET || '';
 
     const doRes = await fetch(`${workerUrl}/api/transcript/${sessionId}/update-topic`, {
