@@ -656,11 +656,12 @@ export default function Whiteboard({
   }, [editor]);
 
   const getShapeVisibility = useCallback((shape: any) => {
-    if (!isTeacher && shape.meta?.strokeId && shape.props?.isComplete === false) {
+    const isMyShape = shape.meta?.createdBy === localParticipantRef.current?.identity;
+    if (!isMyShape && shape.meta?.strokeId && shape.props?.isComplete === false) {
       return 'hidden';
     }
     return 'inherit';
-  }, [isTeacher]);
+  }, []);
 
   // Capture active writer coordinates (teacher or writable students)
   useStrokeCapture({ editor, localParticipant, isWritable, activeStrokeIdRef });

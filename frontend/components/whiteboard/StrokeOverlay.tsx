@@ -305,75 +305,90 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
         }
       }
 
-      // 1. Render Active Strokes
-      strokesRef.current.forEach((stroke, strokeId) => {
-        if (stroke.pageId !== currentPageId) {
-          return;
-        }
-
-        const playPoints = updateStrokePlayout(stroke, now);
-        if (playPoints.length === 0) return;
-
-        let alpha = 1.0;
-        if (stroke.ended) {
-          if (stroke.waitingForStore) {
-            const elapsed = stroke.endTime !== null ? (now - stroke.endTime) : 0;
-            if (elapsed >= 5000) {
-              // Log warning once at 5000ms
-              if (!stroke.warningLogged) {
-                console.warn(`[StrokeOverlay] Warning: tldraw shape for stroke ${strokeId} not received after 5000ms. Pulsing remote stroke.`);
-                stroke.warningLogged = true;
-              }
-              // Pulse opacity between 0.6 and 1.0 using a sine wave with 1.5s period
-              const pulse = 0.8 + 0.2 * Math.sin((now - (stroke.endTime! + 5000)) * (2 * Math.PI / 1500));
-              alpha = pulse;
-            } else {
-              alpha = 1.0; // Freeze at full opacity while waiting for tldraw store sync
-            }
-          } else {
-            const elapsed = stroke.endTime !== null ? (now - stroke.endTime) : 0;
-            if (stroke.skipFade === true || elapsed >= 300) {
-              strokesRef.current.delete(strokeId);
-              return;
-            }
-            alpha = alpha * (1 - elapsed / 300);
-          }
-        }
-
-        ctx.save();
-        ctx.globalAlpha = alpha;
-
-        const cssColor = TLDRAW_COLORS[stroke.color] || stroke.color;
-        const baseWidth = getBaseWidth(stroke.tool, stroke.size);
-
-        drawCatmullRom(ctx, playPoints, baseWidth, cssColor);
-        ctx.restore();
-      });
-
-      // 2. Render Active Erasers
-      erasersRef.current.forEach((eraser, userId) => {
-        if (eraser.pageId !== currentPageId) {
-          return;
-        }
-
-        const elapsed = now - eraser.lastActive;
-        if (elapsed >= 150) {
-          erasersRef.current.delete(userId);
-          return;
-        }
-
-        const alpha = 0.45 * (1 - elapsed / 150);
-
+      // 1. Render Active Strokes & 2. Render Active Erasers (confined to page frames)
+      const frames = editor?.getCurrentPageShapes().filter((s: any) => s.type === 'frame') || [];
+      if (frames.length > 0) {
         ctx.save();
         ctx.beginPath();
-        ctx.arc(eraser.x, eraser.y, eraser.size, 0, 2 * Math.PI);
-        ctx.fillStyle = `rgba(148, 163, 184, ${alpha})`;
-        ctx.strokeStyle = `rgba(100, 116, 139, ${alpha * 1.5})`;
-        ctx.lineWidth = 1.5;
-        ctx.fill();
-        ctx.stroke();
+        frames.forEach((frame: any) => {
+          const w = frame.props?.w ?? 0;
+          const h = frame.props?.h ?? 0;
+          ctx.rect(frame.x, frame.y, w, h);
+        });
+        ctx.clip();
+
+        // 1. Render Active Strokes
+        strokesRef.current.forEach((stroke, strokeId) => {
+          if (stroke.pageId !== currentPageId) {
+            return;
+          }
+
+          const playPoints = updateStrokePlayout(stroke, now);
+          if (playPoints.length === 0) return;
+
+          let alpha = 1.0;
+          if (stroke.ended) {
+            if (stroke.waitingForStore) {
+              const elapsed = stroke.endTime !== null ? (now - stroke.endTime) : 0;
+              if (elapsed >= 5000) {
+                // Log warning once at 5000ms
+                if (!stroke.warningLogged) {
+                  console.warn(`[StrokeOverlay] Warning: tldraw shape for stroke ${strokeId} not received after 5000ms. Pulsing remote stroke.`);
+                  stroke.warningLogged = true;
+                }
+                // Pulse opacity between 0.6 and 1.0 using a sine wave with 1.5s period
+                const pulse = 0.8 + 0.2 * Math.sin((now - (stroke.endTime! + 5000)) * (2 * Math.PI / 1500));
+                alpha = pulse;
+              } else {
+                alpha = 1.0; // Freeze at full opacity while waiting for tldraw store sync
+              }
+            } else {
+              const elapsed = stroke.endTime !== null ? (now - stroke.endTime) : 0;
+              if (stroke.skipFade === true || elapsed >= 300) {
+                strokesRef.current.delete(strokeId);
+                return;
+              }
+              alpha = alpha * (1 - elapsed / 300);
+            }
+          }
+
+          ctx.save();
+          ctx.globalAlpha = alpha;
+
+          const cssColor = TLDRAW_COLORS[stroke.color] || stroke.color;
+          const baseWidth = getBaseWidth(stroke.tool, stroke.size);
+
+          drawCatmullRom(ctx, playPoints, baseWidth, cssColor);
+          ctx.restore();
+        });
+
+        // 2. Render Active Erasers
+        erasersRef.current.forEach((eraser, userId) => {
+          if (eraser.pageId !== currentPageId) {
+            return;
+          }
+
+          const elapsed = now - eraser.lastActive;
+          if (elapsed >= 150) {
+            erasersRef.current.delete(userId);
+            return;
+          }
+
+          const alpha = 0.45 * (1 - elapsed / 150);
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(eraser.x, eraser.y, eraser.size, 0, 2 * Math.PI);
+          ctx.fillStyle = `rgba(148, 163, 184, ${alpha})`;
+          ctx.strokeStyle = `rgba(100, 116, 139, ${alpha * 1.5})`;
+          ctx.lineWidth = 1.5;
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        });
+
         ctx.restore();
-      });
+      }
 
       // 3. Render Smooth Cursors
       cursorsRef.current.forEach((cursor, userId) => {
