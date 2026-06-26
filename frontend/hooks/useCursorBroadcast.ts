@@ -21,6 +21,8 @@ export function useCursorBroadcast({
   isTeacher,
 }: UseCursorBroadcastProps) {
   const userNameRef = useRef(userName);
+  const lastSentTimeRef = useRef(0);
+
   useEffect(() => {
     userNameRef.current = userName;
   }, [userName]);
@@ -31,6 +33,12 @@ export function useCursorBroadcast({
     const handleEvent = (info: any) => {
       if (info.type !== 'pointer') return;
       if (info.name !== 'pointer_move') return;
+
+      const now = Date.now();
+      if (now - lastSentTimeRef.current < 25) { // Throttle to 40Hz (25ms interval)
+        return;
+      }
+      lastSentTimeRef.current = now;
 
       const point = editor.inputs.currentPagePoint;
 

@@ -20,6 +20,7 @@ export function useStrokeCapture({
   const startTimeRef = useRef<number>(0);
   const pointsBufferRef = useRef<{ x: number; y: number; pressure: number; t: number }[]>([]);
   const lastPointRef = useRef<{ x: number; y: number } | null>(null);
+  const lastEraserSentTimeRef = useRef(0);
 
   useEffect(() => {
     if (!editor || !localParticipant || !isWritable) return;
@@ -86,7 +87,7 @@ export function useStrokeCapture({
           const size = editor.getStyleForNextShape(DefaultSizeStyle);
           // Highlight tool uses semi-transparency; draw uses opaque
           const opacity = tool === 'highlight' ? '0.35' : '1.0';
-          const pressure = editor.inputs.pointerInfo?.pressure ?? 0.5;
+          const pressure = 0.5; // Force uniform pressure to match mouse rendering
 
           const startPoint = { x: point.x, y: point.y, pressure, t: 0 };
           pointsBufferRef.current = [startPoint];
@@ -123,12 +124,18 @@ export function useStrokeCapture({
         lastPointRef.current = { x: point.x, y: point.y };
 
         if (isDrawTool && strokeIdRef.current) {
-          const pressure = editor.inputs.pointerInfo?.pressure ?? 0.5;
+          const pressure = 0.5; // Force uniform pressure to match mouse rendering
           const t = Date.now() - startTimeRef.current;
           pointsBufferRef.current.push({ x: point.x, y: point.y, pressure, t });
         } 
         
         else if (isEraserTool) {
+          const now = Date.now();
+          if (now - lastEraserSentTimeRef.current < 25) { // Throttle eraser moves to 40Hz
+            return;
+          }
+          lastEraserSentTimeRef.current = now;
+
           // Stream eraser move events lossily
           const payload = encodeStrokeMessage({
             type: 'ERASER_MOVE',
