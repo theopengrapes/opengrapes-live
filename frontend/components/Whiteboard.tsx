@@ -144,12 +144,16 @@ export default function Whiteboard({
   isSidebarOpen = false,
   isMobile = false
 }: WhiteboardProps) {
+  // generate a unique client/session ID for this browser connection
+  const [clientId] = useState(() => uniqueId());
+
   // useSync connects to our self-hosted Cloudflare worker sync endpoint
   const wsUri = SYNC_WORKER_URL.replace(/^http/, 'ws');
   const store = useSync({
-    uri: `${wsUri}/api/connect/${roomName}`,
+    uri: `${wsUri}/api/connect/${roomName}?sessionId=${clientId}`,
     assets: multiplayerAssetStore,
   });
+
 
   const [editor, setEditor] = useState<any>(null);
 
