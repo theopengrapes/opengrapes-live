@@ -257,6 +257,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
   const [pinnedTrackSid, setPinnedTrackSid] = useState<string | null>(null);
   const [spotlightTrackSid, setSpotlightTrackSid] = useState<string | null>(null);
   const [isMobile, setIsMobile] = useState(false);
+  const [windowWidth, setWindowWidth] = useState(1024);
   const [isPhone, setIsPhone] = useState(false);
   const [isTablet, setIsTablet] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
@@ -296,6 +297,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
       const landscape = width > height;
       
       setIsLandscape(landscape);
+      setWindowWidth(width);
 
       const isPortraitTablet = isTabletDevice && !landscape;
       const isSmallScreen = width < 768;
@@ -1341,6 +1343,27 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
     });
   }, [remoteStudents]);
 
+  const tilesPerPage = useMemo(() => {
+    if (windowWidth < 640) return 4;
+    if (windowWidth < 1024) return 6;
+    return 9;
+  }, [windowWidth]);
+
+  const reservedCount = useMemo(() => {
+    let count = 0;
+    const hasTeacher = !!teacherTrack;
+    const hasSelf = !!localTrack;
+    if (hasTeacher) count++;
+    if (hasSelf && (!hasTeacher || localTrack?.participant.sid !== teacherTrack?.participant.sid)) {
+      count++;
+    }
+    return count;
+  }, [teacherTrack, localTrack]);
+
+  const studentsOnPage1 = useMemo(() => {
+    return Math.max(0, tilesPerPage - reservedCount);
+  }, [tilesPerPage, reservedCount]);
+
   // Track active speaker student with queue swap logic
   useEffect(() => {
     if (!room) return;
@@ -1368,7 +1391,9 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
       setOrderedRemoteStudents(prev => {
         if (prev.length === 0) return prev;
 
-        const visibleLimit = isMobile ? (showSplitLayout ? 1 : 2) : (showSplitLayout ? 2 : 4);
+        const visibleLimit = showSplitLayout
+          ? (isMobile ? 1 : 2)
+          : studentsOnPage1;
         
         // Find if this speaker is in the top visible slots
         const visibleIndex = prev.findIndex(t => t.participant.sid === activeSpeaker.sid);
@@ -1378,7 +1403,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
           const newQueue = [...prev];
           const sIndex = prev.findIndex(t => t.participant.sid === activeSpeaker.sid);
           if (sIndex === -1) return prev; // No camera track for this speaker
-
+ 
           // Find the visible slot (0 to visibleLimit-1) that spoke least recently
           let oldestIndex = 0;
           let oldestTime = lastSpokeRef.current[prev[0]?.participant.sid] || 0;
@@ -1404,12 +1429,12 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
         return prev;
       });
     };
-
+ 
     room.on('activeSpeakersChanged', handleActiveSpeakers);
     return () => {
       room.off('activeSpeakersChanged', handleActiveSpeakers);
     };
-  }, [room, localParticipant, showSplitLayout, isMobile]);
+  }, [room, localParticipant, showSplitLayout, isMobile, studentsOnPage1]);
 
   // Check R2 bucket periodically for exported notes PDF
   useEffect(() => {
@@ -1681,7 +1706,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
                     isTeacher={isTeacher}
                     activeStudentTrack={activeStudentTrack}
                     teacherTrack={teacherTrack}
-                    remoteStudents={remoteStudents}
+                    remoteStudents={orderedRemoteStudents}
                     gridStudents={gridStudents}
                     cameraTracksCount={cameraTracks.length}
                     layoutMode={layoutMode === 'focus' ? 'tiled' : layoutMode}
@@ -1691,6 +1716,8 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
                     setSpotlightTrackSid={setSpotlightTrackSid}
                     onBroadcastSpotlight={handleBroadcastSpotlight}
                     localTrack={localTrack}
+                    studentGridPage={studentGridPage}
+                    setStudentGridPage={setStudentGridPage}
                   />
                 )
               )}
@@ -1872,7 +1899,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
       ref={roomContainerRef}
       className="grid h-screen w-screen overflow-hidden bg-shell text-text relative font-sans"
       style={{ 
-        gridTemplateRows: '48px 1fr 72px', 
+        gridTemplateRows: '48px minmax(0, 1fr) 72px', 
         gridTemplateColumns: (showWhiteboard && isWhiteboardAllowed) ? '52px 1fr' : '1fr',
         isolation: 'isolate' 
       }}
@@ -1895,7 +1922,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
       )}
 
       {/* 1. TOP BAR (48px tall, spans full width) */}
-      <div className="col-span-2 h-[48px] bg-surface border-b border-border flex items-center justify-between px-6 relative z-50 select-none">
+      <div className="row-start-1 col-start-1 col-span-full h-[48px] bg-surface border-b border-border flex items-center justify-between px-6 relative z-50 select-none">
         {/* Left: Pulsing red dot, Branding & Timer (adjacent) */}
         <div className="flex items-center gap-1">
           <div className="flex items-center">
@@ -1938,13 +1965,13 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
 
       {/* 3. CONTENT ZONE (row 2, col 2) */}
       <div 
-        className={`relative overflow-hidden z-10 h-full ${
+        className={`row-start-2 ${(showWhiteboard && isWhiteboardAllowed) ? 'col-start-2' : 'col-start-1 col-span-full'} relative overflow-hidden z-10 h-full min-h-0 ${
           showSplitLayout || (isChatPinned && activeRightPanelTab) ? 'flex flex-row' : 'block'
         }`}
       >
         {/* Main Viewport Container */}
         <div 
-          className={`h-full relative overflow-hidden bg-[#060b18] ${
+          className={`h-full min-h-0 relative overflow-hidden bg-[#060b18] ${
             showSplitLayout || (isChatPinned && activeRightPanelTab) ? 'flex-1 min-w-0' : 'w-full'
           }`}
           onClick={handleViewportClick}
@@ -2014,7 +2041,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
                 isTeacher={isTeacher}
                 activeStudentTrack={activeStudentTrack}
                 teacherTrack={teacherTrack}
-                remoteStudents={remoteStudents}
+                remoteStudents={orderedRemoteStudents}
                 gridStudents={gridStudents}
                 cameraTracksCount={cameraTracks.length}
                 layoutMode={layoutMode === 'focus' ? 'tiled' : layoutMode}
@@ -2024,6 +2051,8 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
                 setSpotlightTrackSid={setSpotlightTrackSid}
                 onBroadcastSpotlight={handleBroadcastSpotlight}
                 localTrack={localTrack}
+                studentGridPage={studentGridPage}
+                setStudentGridPage={setStudentGridPage}
               />
             )
           )}
@@ -2095,7 +2124,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
       </div>
       {/* 4. BOTTOM BAR (72px, spans full width, row 3) */}
       <div 
-        className="col-span-2 h-[72px] bg-surface border-t border-border px-6 py-1.5 flex items-center justify-between z-50 relative"
+        className="row-start-3 col-start-1 col-span-full h-[72px] bg-surface border-t border-border px-6 py-1.5 flex items-center justify-between z-50 relative"
       >
         
         {/* Controls container (spaced evenly) */}

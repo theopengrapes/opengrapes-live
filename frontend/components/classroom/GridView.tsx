@@ -20,6 +20,8 @@ interface GridViewProps {
   setSpotlightTrackSid: (sid: string | null) => void;
   onBroadcastSpotlight?: (sid: string | null) => void;
   localTrack: TrackReferenceOrPlaceholder | undefined;
+  studentGridPage: number;
+  setStudentGridPage: (page: number) => void;
 }
 
 // Custom ResizeObserver hook to measure container dimensions
@@ -59,9 +61,58 @@ export default function GridView({
   setSpotlightTrackSid,
   onBroadcastSpotlight,
   localTrack,
+  studentGridPage,
+  setStudentGridPage,
 }: GridViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { width, height } = useContainerDimensions(containerRef);
+
+  // Dynamic page limits based on actual container width
+  const tilesPerPage = useMemo(() => {
+    if (width <= 0) return 9; // default fallback
+    if (width < 640) return 4;
+    if (width < 1024) return 6;
+    return 9;
+  }, [width]);
+
+  const reservedList = useMemo(() => {
+    const list: TrackReferenceOrPlaceholder[] = [];
+    if (teacherTrack) {
+      list.push(teacherTrack);
+    }
+    if (localTrack && (!teacherTrack || localTrack.participant.sid !== teacherTrack.participant.sid)) {
+      list.push(localTrack);
+    }
+    return list;
+  }, [teacherTrack, localTrack]);
+
+  const studentsOnPage1 = useMemo(() => {
+    return Math.max(0, tilesPerPage - reservedList.length);
+  }, [tilesPerPage, reservedList.length]);
+
+  const totalPages = useMemo(() => {
+    const totalStudents = remoteStudents.length;
+    if (totalStudents <= studentsOnPage1) return 1;
+    return 1 + Math.ceil((totalStudents - studentsOnPage1) / tilesPerPage);
+  }, [remoteStudents.length, studentsOnPage1, tilesPerPage]);
+
+  // Auto-clamp page index if it goes out of bounds
+  useEffect(() => {
+    if (studentGridPage >= totalPages && totalPages > 0) {
+      setStudentGridPage(totalPages - 1);
+    }
+  }, [studentGridPage, totalPages, setStudentGridPage]);
+
+  const paginatedParticipants = useMemo(() => {
+    if (studentGridPage === 0) {
+      const pageStudents = remoteStudents.slice(0, studentsOnPage1);
+      return [...reservedList, ...pageStudents];
+    } else {
+      const startIndex = studentsOnPage1 + (studentGridPage - 1) * tilesPerPage;
+      const endIndex = startIndex + tilesPerPage;
+      return remoteStudents.slice(startIndex, endIndex);
+    }
+  }, [studentGridPage, remoteStudents, studentsOnPage1, tilesPerPage, reservedList]);
 
   // Compile list of tiles depending on layout modes
   const allParticipants = useMemo(() => {
@@ -172,7 +223,7 @@ export default function GridView({
 
       {currentViewMode === 'tiled' && (
         <TiledView
-          allParticipants={allParticipants}
+          allParticipants={paginatedParticipants}
           pinnedTrackSid={pinnedTrackSid}
           spotlightTrackSid={spotlightTrackSid}
           onTogglePin={handleTogglePin}
@@ -180,6 +231,9 @@ export default function GridView({
           isTeacher={isTeacher}
           width={width}
           height={height}
+          currentPage={studentGridPage}
+          totalPages={totalPages}
+          onPageChange={setStudentGridPage}
         />
       )}
 

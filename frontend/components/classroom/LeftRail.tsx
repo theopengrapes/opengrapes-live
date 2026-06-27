@@ -225,7 +225,7 @@ export default function LeftRail({ editor, showWhiteboard, strokeWidth = 1.5, is
 
   return (
     <div
-      className="w-[52px] shrink-0 h-full bg-surface border-r border-border flex flex-col justify-between select-none z-[110] relative"
+      className="row-start-2 col-start-1 w-[52px] shrink-0 h-full bg-surface border-r border-border flex flex-col justify-between select-none z-[110] relative"
       style={{ paddingTop: topPadding ?? 16, paddingBottom: bottomPadding ?? 16 }}
     >
       
