@@ -117,6 +117,21 @@ export default function GridView({
     return 'tiled';
   }, [layoutMode]);
 
+  // Compute the list of participants for the sidebar (gridStudents + teacher if not featured)
+  const sidebarParticipants = useMemo(() => {
+    const list = [...gridStudents];
+    const teacher = isTeacher ? localTrack : teacherTrack;
+    
+    if (teacher && featuredTrack?.participant.sid !== teacher.participant.sid) {
+      // Ensure the teacher is not already in the list
+      if (!list.some(t => t.participant.sid === teacher.participant.sid)) {
+        list.unshift(teacher);
+      }
+    }
+    
+    return list;
+  }, [gridStudents, teacherTrack, localTrack, isTeacher, featuredTrack]);
+
   if (cameraTracksCount === 0) {
     return (
       <div className="w-full h-full flex items-center justify-center overflow-hidden">
@@ -171,7 +186,7 @@ export default function GridView({
       {currentViewMode === 'sidebar' && (
         <SidebarView
           featuredTrack={featuredTrack || null}
-          gridStudents={gridStudents}
+          gridStudents={sidebarParticipants}
           pinnedTrackSid={pinnedTrackSid}
           spotlightTrackSid={spotlightTrackSid}
           onTogglePin={handleTogglePin}
