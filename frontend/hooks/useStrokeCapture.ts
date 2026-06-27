@@ -79,10 +79,7 @@ export function useStrokeCapture({
         lastPointRef.current = { x: point.x, y: point.y };
 
         if (isDrawTool) {
-          strokeIdRef.current = `${localParticipant.identity}-${Date.now()}`;
-          if (activeStrokeIdRef) {
-            activeStrokeIdRef.current = strokeIdRef.current;
-          }
+          strokeIdRef.current = activeStrokeIdRef?.current ?? `${localParticipant.identity}-${Date.now()}`;
           const color = editor.getStyleForNextShape(DefaultColorStyle);
           const size = editor.getStyleForNextShape(DefaultSizeStyle);
           // Highlight tool uses semi-transparency; draw uses opaque

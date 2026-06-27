@@ -1,5 +1,5 @@
 'use client';
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 const DEBUG_PERF = false;
 import { 
   Tldraw, 
@@ -43,6 +43,8 @@ interface WhiteboardProps {
   localParticipant?: any;
   isSidebarOpen?: boolean;
   isMobile?: boolean;
+  globalWhiteboardAllowed?: boolean;
+  allowedWhiteboardStudents?: Record<string, boolean>;
 }
 
 const SYNC_WORKER_URL = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
@@ -142,7 +144,9 @@ export default function Whiteboard({
   room,
   localParticipant,
   isSidebarOpen = false,
-  isMobile = false
+  isMobile = false,
+  globalWhiteboardAllowed = false,
+  allowedWhiteboardStudents = {} as Record<string, boolean>
 }: WhiteboardProps) {
   // generate a unique client/session ID for this browser connection
   const [clientId] = useState(() => uniqueId());
@@ -155,6 +159,36 @@ export default function Whiteboard({
     assets: multiplayerAssetStore,
   });
 
+  // Warm up DO on session start
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const OriginalWebSocket = window.WebSocket;
+
+    class WarmupWebSocket extends OriginalWebSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        
+        const urlStr = url.toString();
+        if (urlStr.includes('/api/connect/')) {
+          this.addEventListener('open', () => {
+            try {
+              this.send(JSON.stringify({ type: 'warmup' }));
+              console.log('[Whiteboard] Sent warmup message to Durable Object.');
+            } catch (err) {
+              console.error('[Whiteboard] Failed to send warmup message:', err);
+            }
+          });
+        }
+      }
+    }
+
+    window.WebSocket = WarmupWebSocket as any;
+
+    return () => {
+      window.WebSocket = OriginalWebSocket;
+    };
+  }, []);
 
   const [editor, setEditor] = useState<any>(null);
 
@@ -196,15 +230,19 @@ export default function Whiteboard({
       if (source === 'remote') {
         return shape;
       }
-      // Don't overwrite if it already has createdBy (e.g. synced from another user)
-      if (shape.meta?.createdBy) {
+      // Don't overwrite if it already has strokeId (e.g. synced from another user)
+      if (shape.meta?.strokeId) {
         return shape;
       }
       const metaUpdate: any = {
         ...shape.meta,
         createdBy: localParticipantRef.current?.identity ?? 'unknown',
       };
-      if (activeStrokeIdRef.current !== null) {
+      if (shape.type === 'draw') {
+        const strokeId = `${localParticipantRef.current?.identity ?? 'unknown'}-${Date.now()}`;
+        metaUpdate.strokeId = strokeId;
+        activeStrokeIdRef.current = strokeId;
+      } else if (activeStrokeIdRef.current !== null) {
         metaUpdate.strokeId = activeStrokeIdRef.current;
       }
       return {
@@ -621,28 +659,47 @@ export default function Whiteboard({
     };
   }, [editor]);
 
+  const getShapeVisibility = useCallback((shape: any) => {
+    const isMyShape = shape.meta?.createdBy === localParticipantRef.current?.identity;
+    if (!isMyShape && shape.meta?.strokeId && shape.props?.isComplete === false) {
+      return 'hidden';
+    }
+    return 'inherit';
+  }, []);
+
   // Capture active writer coordinates (teacher or writable students)
   useStrokeCapture({ editor, localParticipant, isWritable, activeStrokeIdRef });
   useCursorBroadcast({ editor, localParticipant, isWritable, userName: userName || 'Participant', isTeacher });
 
   return (
-    <div className="w-full h-full relative touch-none" style={{ touchAction: 'none' }}>
-      <Tldraw 
-        store={store} 
+    <div
+      className="w-full h-full relative touch-none"
+      style={{ touchAction: "none" }}
+    >
+      <Tldraw
+        store={store}
         onMount={handleMount}
         components={whiteboardComponents}
         overrides={whiteboardOverrides}
-        overlayUtils={[HiddenCollaboratorCursorOverlayUtil, HiddenCollaboratorHintOverlayUtil]}
+        overlayUtils={[
+          HiddenCollaboratorCursorOverlayUtil,
+          HiddenCollaboratorHintOverlayUtil,
+        ]}
+        getShapeVisibility={getShapeVisibility}
         licenseKey="tldraw-2026-10-04/WyJuVUp6Z2RVOSIsWyIqIl0sMTYsIjIwMjYtMTAtMDQiXQ.zXszL8E54vL/Z2ZhQnXogE9n9sFkAz4jBMrR81a4ILvlXAQCR6H1J3tk/SXzk73DrP8QmDcwm2AUbsMWpstNuQ"
       />
-
-
 
       {/* Read-Only Mode Status Badge for Students */}
       {!isTeacher && !isWritable && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 pointer-events-none select-none animate-in fade-in duration-200">
           <div className="flex items-center gap-1.5 px-3 py-1.5 bg-[#0c101d]/90 border border-amber-500/30 text-amber-500 backdrop-blur-md rounded-full text-xs font-semibold shadow-lg">
-            <svg className="w-3.5 h-3.5 animate-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <svg
+              className="w-3.5 h-3.5 animate-pulse"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
               <path d="M7 11V7a5 5 0 0110 0v4" />
             </svg>
@@ -652,19 +709,23 @@ export default function Whiteboard({
       )}
 
       {/* Stroke Overlay Canvas */}
-      <StrokeOverlay 
-        editor={editor} 
-        room={room} 
-        localParticipant={localParticipant} 
+      <StrokeOverlay
+        editor={editor}
+        room={room}
+        localParticipant={localParticipant}
       />
 
       {/* Empty Whiteboard Placeholder Overlay */}
       <EmptyWhiteboardOverlay editor={editor} isTeacher={isTeacher} />
 
-      {/* Floating "Resume Following Teacher" Button for Students */}
-      <ResumeFollowingButton 
-        editor={editor} 
-        isTeacher={isTeacher} 
+      {/* Floating Follow active whiteboard editors Split-Button */}
+      <FollowManagerButton
+        editor={editor}
+        isTeacher={isTeacher}
+        isWritable={isWritable}
+        room={room}
+        globalWhiteboardAllowed={globalWhiteboardAllowed}
+        allowedWhiteboardStudents={allowedWhiteboardStudents}
         isSidebarOpen={isSidebarOpen}
         isMobile={isMobile}
       />
@@ -709,84 +770,231 @@ function EmptyWhiteboardOverlay({ editor, isTeacher }: { editor: any; isTeacher:
   );
 }
 
-function ResumeFollowingButton({ 
-  editor, 
-  isTeacher, 
-  isSidebarOpen, 
-  isMobile 
-}: { 
-  editor: any; 
-  isTeacher: boolean; 
-  isSidebarOpen: boolean; 
-  isMobile: boolean 
-}) {
-  const [isFollowingTeacher, setIsFollowingTeacher] = useState(false);
+interface FollowManagerButtonProps {
+  editor: any;
+  isTeacher: boolean;
+  isWritable: boolean;
+  room: any;
+  globalWhiteboardAllowed: boolean;
+  allowedWhiteboardStudents: Record<string, boolean>;
+  isSidebarOpen: boolean;
+  isMobile: boolean;
+}
 
-  useEffect(() => {
-    if (!editor || isTeacher) return;
+function FollowManagerButton({
+  editor,
+  isTeacher,
+  isWritable,
+  room,
+  globalWhiteboardAllowed,
+  allowedWhiteboardStudents,
+  isSidebarOpen,
+  isMobile,
+}: FollowManagerButtonProps) {
+  const [followingTarget, setFollowingTarget] = useState<{ userId: string; userName: string } | null>(null);
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  
+  const lastTargetIdRef = useRef<string | null>(null);
+  const dropdownRef = useRef<HTMLDivElement | null>(null);
 
-    const checkAndFollowTeacher = () => {
-      const instanceState = editor.getInstanceState();
-      const currentFollowing = instanceState.followingUserId;
-      const teacher = editor.getCollaborators().find((c: any) => c.userName?.endsWith('(Teacher)'));
+  // 1. Calculate active remote whiteboard editors
+  const collaborators = editor?.getCollaborators() || [];
+  const teacher = collaborators.find((c: any) => c.userName?.endsWith('(Teacher)'));
 
+  const remoteStudentWriters = collaborators.filter((c: any) => {
+    if (!c.userName) return false;
+    if (c.userName.endsWith('(Teacher)')) return false;
+    if (globalWhiteboardAllowed) return true;
+
+    const participant = Array.from(room?.remoteParticipants?.values() || [])
+      .find((p: any) => p.name === c.userName || p.identity === c.userName) as any;
+    return participant ? !!allowedWhiteboardStudents?.[participant.identity] : false;
+  });
+
+  const hasRemoteStudentWriters = remoteStudentWriters.length > 0;
+
+  // 2. Compute list of followable targets for the local user
+  const followableTargets = useMemo(() => {
+    const list: { userId: string; userName: string }[] = [];
+    if (isTeacher) {
+      remoteStudentWriters.forEach((c: any) => {
+        list.push({ userId: c.userId, userName: c.userName });
+      });
+    } else if (isWritable) {
       if (teacher) {
-        if (!currentFollowing || currentFollowing !== teacher.userId) {
-          editor.startFollowingUser(teacher.userId);
-          setIsFollowingTeacher(true);
-        }
-      } else {
-        setIsFollowingTeacher(false);
+        list.push({ userId: teacher.userId, userName: teacher.userName });
+      }
+    } else {
+      if (teacher) {
+        list.push({ userId: teacher.userId, userName: teacher.userName });
+      }
+      remoteStudentWriters.forEach((c: any) => {
+        list.push({ userId: c.userId, userName: c.userName });
+      });
+    }
+    return list;
+  }, [isTeacher, isWritable, teacher, remoteStudentWriters]);
+
+  // 3. Keep target state synced with available list
+  useEffect(() => {
+    if (followableTargets.length === 0) {
+      setFollowingTarget(null);
+      return;
+    }
+
+    const isCurrentTargetValid = followingTarget && followableTargets.some(t => t.userId === followingTarget.userId);
+    if (!isCurrentTargetValid) {
+      const defaultTarget = followableTargets.find(t => t.userName.endsWith('(Teacher)')) || followableTargets[0];
+      setFollowingTarget(defaultTarget);
+    }
+  }, [followableTargets, followingTarget]);
+
+  // 4. Track if we are actively following the target
+  useEffect(() => {
+    if (!editor || !followingTarget) {
+      setIsFollowing(false);
+      return;
+    }
+
+    const updateFollowState = () => {
+      const instanceState = editor.getInstanceState();
+      setIsFollowing(instanceState.followingUserId === followingTarget.userId);
+    };
+
+    updateFollowState();
+    const cleanup = editor.store.listen(updateFollowState, { scope: 'session' });
+    return () => cleanup();
+  }, [editor, followingTarget]);
+
+  // 5. Auto-follow on target change/mount
+  useEffect(() => {
+    if (!editor || !followingTarget) return;
+
+    if (lastTargetIdRef.current !== followingTarget.userId) {
+      lastTargetIdRef.current = followingTarget.userId;
+      editor.startFollowingUser(followingTarget.userId);
+      setIsFollowing(true);
+    }
+  }, [editor, followingTarget]);
+
+  // 6. Handle click outside dropdown
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setIsDropdownOpen(false);
       }
     };
-
-    checkAndFollowTeacher();
-
-    // Listen to remote presence changes
-    const cleanupPresence = editor.store.listen(
-      () => {
-        checkAndFollowTeacher();
-      },
-      { source: 'remote', scope: 'presence' }
-    );
-
-    // Track if user manually stopped following (pans/zooms)
-    const cleanupLocalFollow = editor.store.listen(
-      () => {
-        const instanceState = editor.getInstanceState();
-        const teacher = editor.getCollaborators().find((c: any) => c.userName?.endsWith('(Teacher)'));
-        setIsFollowingTeacher(!!teacher && instanceState.followingUserId === teacher.userId);
-      },
-      { scope: 'session', source: 'user' }
-    );
-
+    if (isDropdownOpen) {
+      window.addEventListener('click', handleOutsideClick);
+    }
     return () => {
-      cleanupPresence();
-      cleanupLocalFollow();
+      window.removeEventListener('click', handleOutsideClick);
     };
-  }, [editor, isTeacher]);
+  }, [isDropdownOpen]);
 
-  if (isTeacher || isFollowingTeacher || !editor) return null;
+  // 7. Check visibility rules
+  if (!editor || !followingTarget) return null;
 
-  const hasTeacher = editor.getCollaborators().some((c: any) => c.userName?.endsWith('(Teacher)'));
-  if (!hasTeacher) return null;
+  // Case A: Only Teacher is writing
+  if (!hasRemoteStudentWriters) {
+    if (isTeacher) return null; // Teacher does not need to follow anyone
+    if (isFollowing) return null; // Auto-hide for student if actively following
+  } else {
+    // Case B: Student(s) also have edit permission
+    if (isTeacher && followableTargets.length === 0) return null;
+    if (isWritable && !isTeacher && isFollowing) return null; // Editor student auto-hides when following the teacher
+  }
+
+  const showChevron = followableTargets.length > 1;
+
+  const handleFollowClick = () => {
+    editor.startFollowingUser(followingTarget.userId);
+    setIsFollowing(true);
+  };
+
+  const handleSelectTarget = (target: { userId: string; userName: string }) => {
+    setFollowingTarget(target);
+    setIsDropdownOpen(false);
+  };
+
+  const cleanName = (name: string) => {
+    return name.replace(/\s*\(Teacher\)\s*$/, '');
+  };
 
   return (
-    <button
-      onClick={() => {
-        const teacher = editor.getCollaborators().find((c: any) => c.userName?.endsWith('(Teacher)'));
-        if (teacher) {
-          editor.startFollowingUser(teacher.userId);
-          setIsFollowingTeacher(true);
-        }
-      }}
-      className="absolute z-40 flex items-center gap-2 px-4 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl text-xs font-semibold shadow-lg hover:shadow-primary/25 cursor-pointer font-sans transition-all duration-300 border border-primary/20 bottom-4 right-4 md:bottom-6 md:right-6"
+    <div 
+      ref={dropdownRef}
+      className={`absolute z-40 flex items-center rounded-xl shadow-lg border font-sans transition-all duration-300 bottom-4 right-4 md:bottom-6 md:right-6 overflow-hidden ${
+        isFollowing 
+          ? 'bg-[#0c101d]/80 hover:bg-[#0c101d]/90 text-white/90 border-white/10 backdrop-blur-md shadow-black/20' 
+          : 'bg-primary hover:bg-primary-hover text-white border-primary/20 shadow-primary/25'
+      }`}
     >
-      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-        <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-      </svg>
-      Resume Following Teacher
-    </button>
+      <button
+        onClick={handleFollowClick}
+        className={`flex items-center gap-2 px-4 py-2.5 text-xs font-semibold cursor-pointer transition-colors duration-200 ${
+          showChevron 
+            ? isFollowing 
+              ? 'border-r border-white/10 hover:bg-white/5' 
+              : 'border-r border-white/20 hover:bg-black/10' 
+            : isFollowing 
+              ? 'hover:bg-white/5' 
+              : 'hover:bg-black/10'
+        }`}
+      >
+        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+        </svg>
+        <span>
+          {isFollowing ? 'Following' : 'Resume Following'} {cleanName(followingTarget.userName)}
+        </span>
+      </button>
+
+      {showChevron && (
+        <button
+          onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+          className={`px-3 py-2.5 cursor-pointer flex items-center justify-center transition-colors duration-200 ${
+            isFollowing ? 'hover:bg-white/5' : 'hover:bg-black/10'
+          }`}
+        >
+          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+          </svg>
+        </button>
+      )}
+
+      {isDropdownOpen && (
+        <div className="absolute bottom-full mb-2 right-0 w-52 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-xl overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200 z-50">
+          <div className="px-3.5 py-2 border-b border-zinc-150 dark:border-zinc-800 text-[10px] uppercase tracking-wider font-bold text-zinc-400 dark:text-zinc-500">
+            Select Editor to Follow
+          </div>
+          <div className="max-h-48 overflow-y-auto">
+            {followableTargets.map((target) => {
+              const isCurrent = target.userId === followingTarget.userId;
+              return (
+                <button
+                  key={target.userId}
+                  onClick={() => handleSelectTarget(target)}
+                  className={`w-full text-left px-4 py-2.5 text-xs font-semibold flex items-center justify-between cursor-pointer transition-colors duration-150 ${
+                    isCurrent 
+                      ? 'bg-primary/10 text-primary hover:bg-primary/15 dark:bg-primary/20 dark:text-primary-light' 
+                      : 'text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800'
+                  }`}
+                >
+                  <span>{cleanName(target.userName)}</span>
+                  {isCurrent && (
+                    <svg className="w-4 h-4 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                    </svg>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

@@ -20,6 +20,8 @@ interface GridViewProps {
   setSpotlightTrackSid: (sid: string | null) => void;
   onBroadcastSpotlight?: (sid: string | null) => void;
   localTrack: TrackReferenceOrPlaceholder | undefined;
+  studentGridPage: number;
+  setStudentGridPage: (page: number) => void;
 }
 
 // Custom ResizeObserver hook to measure container dimensions
@@ -59,9 +61,58 @@ export default function GridView({
   setSpotlightTrackSid,
   onBroadcastSpotlight,
   localTrack,
+  studentGridPage,
+  setStudentGridPage,
 }: GridViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { width, height } = useContainerDimensions(containerRef);
+
+  // Dynamic page limits based on actual container width
+  const tilesPerPage = useMemo(() => {
+    if (width <= 0) return 9; // default fallback
+    if (width < 640) return 4;
+    if (width < 1024) return 6;
+    return 9;
+  }, [width]);
+
+  const reservedList = useMemo(() => {
+    const list: TrackReferenceOrPlaceholder[] = [];
+    if (teacherTrack) {
+      list.push(teacherTrack);
+    }
+    if (localTrack && (!teacherTrack || localTrack.participant.sid !== teacherTrack.participant.sid)) {
+      list.push(localTrack);
+    }
+    return list;
+  }, [teacherTrack, localTrack]);
+
+  const studentsOnPage1 = useMemo(() => {
+    return Math.max(0, tilesPerPage - reservedList.length);
+  }, [tilesPerPage, reservedList.length]);
+
+  const totalPages = useMemo(() => {
+    const totalStudents = remoteStudents.length;
+    if (totalStudents <= studentsOnPage1) return 1;
+    return 1 + Math.ceil((totalStudents - studentsOnPage1) / tilesPerPage);
+  }, [remoteStudents.length, studentsOnPage1, tilesPerPage]);
+
+  // Auto-clamp page index if it goes out of bounds
+  useEffect(() => {
+    if (studentGridPage >= totalPages && totalPages > 0) {
+      setStudentGridPage(totalPages - 1);
+    }
+  }, [studentGridPage, totalPages, setStudentGridPage]);
+
+  const paginatedParticipants = useMemo(() => {
+    if (studentGridPage === 0) {
+      const pageStudents = remoteStudents.slice(0, studentsOnPage1);
+      return [...reservedList, ...pageStudents];
+    } else {
+      const startIndex = studentsOnPage1 + (studentGridPage - 1) * tilesPerPage;
+      const endIndex = startIndex + tilesPerPage;
+      return remoteStudents.slice(startIndex, endIndex);
+    }
+  }, [studentGridPage, remoteStudents, studentsOnPage1, tilesPerPage, reservedList]);
 
   // Compile list of tiles depending on layout modes
   const allParticipants = useMemo(() => {
@@ -117,6 +168,46 @@ export default function GridView({
     return 'tiled';
   }, [layoutMode]);
 
+  // Compute the list of participants for the sidebar (gridStudents + teacher/self custom layout)
+  const sidebarParticipants = useMemo(() => {
+    const teacher = isTeacher ? localTrack : teacherTrack;
+    const self = localTrack;
+
+    // Filter out self and teacher from the cloned gridStudents list first to avoid duplication
+    const list = gridStudents.filter(t => 
+      t.participant.sid !== self?.participant.sid && 
+      t.participant.sid !== teacher?.participant.sid
+    );
+    
+    const isTeacherFeatured = teacher && featuredTrack?.participant.sid === teacher.participant.sid;
+    const isSelfFeatured = self && featuredTrack?.participant.sid === self.participant.sid;
+    
+    if (isTeacher) {
+      if (!isTeacherFeatured && self) {
+        list.unshift(self);
+      }
+    } else {
+      if (isTeacherFeatured) {
+        if (self) {
+          list.unshift(self);
+        }
+      } else if (isSelfFeatured) {
+        if (teacher) {
+          list.unshift(teacher);
+        }
+      } else {
+        if (self) {
+          list.unshift(self);
+        }
+        if (teacher) {
+          list.unshift(teacher);
+        }
+      }
+    }
+    
+    return list;
+  }, [gridStudents, teacherTrack, localTrack, isTeacher, featuredTrack]);
+
   if (cameraTracksCount === 0) {
     return (
       <div className="w-full h-full flex items-center justify-center overflow-hidden">
@@ -157,7 +248,7 @@ export default function GridView({
 
       {currentViewMode === 'tiled' && (
         <TiledView
-          allParticipants={allParticipants}
+          allParticipants={paginatedParticipants}
           pinnedTrackSid={pinnedTrackSid}
           spotlightTrackSid={spotlightTrackSid}
           onTogglePin={handleTogglePin}
@@ -165,13 +256,16 @@ export default function GridView({
           isTeacher={isTeacher}
           width={width}
           height={height}
+          currentPage={studentGridPage}
+          totalPages={totalPages}
+          onPageChange={setStudentGridPage}
         />
       )}
 
       {currentViewMode === 'sidebar' && (
         <SidebarView
           featuredTrack={featuredTrack || null}
-          gridStudents={gridStudents}
+          gridStudents={sidebarParticipants}
           pinnedTrackSid={pinnedTrackSid}
           spotlightTrackSid={spotlightTrackSid}
           onTogglePin={handleTogglePin}

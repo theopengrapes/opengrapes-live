@@ -27,6 +27,10 @@ interface ActiveStroke {
   endTime: number | null;
   bufferDelay: number;
   skipFade?: boolean;
+  waitingForStore?: boolean;
+  warningLogged?: boolean;
+  transitioning?: boolean;
+  transitionStartTime?: number;
 }
 
 interface ActiveEraser {
@@ -160,6 +164,26 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
         if (stroke) {
           stroke.ended = true;
           stroke.endTime = now;
+          stroke.waitingForStore = true;
+
+          // Check if the shape already exists and is complete in tldraw store
+          const isShapeInStoreComplete = editor
+            ?.getCurrentPageShapes()
+            ?.some((s: any) => s.meta?.strokeId === msg.strokeId && s.props?.isComplete !== false);
+
+          if (isShapeInStoreComplete) {
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                const s = strokesRef.current.get(msg.strokeId);
+                if (s) {
+                  s.transitioning = true;
+                  if (!s.transitionStartTime) {
+                    s.transitionStartTime = Date.now();
+                  }
+                }
+              });
+            });
+          }
         }
       }
 
@@ -189,14 +213,50 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
     if (!editor) return;
 
     const cleanupStoreListener = editor.store.listen((event: any) => {
-      if ((event.source === 'remote' || event.source === 'user') && event.changes.added) {
+      const isRemoteOrUser = event.source === 'remote' || event.source === 'user';
+      if (!isRemoteOrUser) return;
+
+      // Handle added shapes (e.g. if shape is added fully complete or already ended)
+      if (event.changes.added) {
         Object.values(event.changes.added).forEach((shape: any) => {
           const strokeId = shape.meta?.strokeId;
           if (strokeId) {
             const activeStroke = strokesRef.current.get(strokeId);
-            if (activeStroke) {
-              activeStroke.ended = true;
-              activeStroke.skipFade = true;
+            if (activeStroke && (activeStroke.ended || shape.props?.isComplete !== false)) {
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  const s = strokesRef.current.get(strokeId);
+                  if (s) {
+                    s.transitioning = true;
+                    if (!s.transitionStartTime) {
+                      s.transitionStartTime = Date.now();
+                    }
+                  }
+                });
+              });
+            }
+          }
+        });
+      }
+
+      // Handle updated shapes (e.g. when draft shape is finalized on pointer_up)
+      if (event.changes.updated) {
+        Object.values(event.changes.updated).forEach(([prev, curr]: any) => {
+          const strokeId = curr.meta?.strokeId;
+          if (strokeId) {
+            const activeStroke = strokesRef.current.get(strokeId);
+            if (activeStroke && (activeStroke.ended || curr.props?.isComplete !== false)) {
+              requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                  const s = strokesRef.current.get(strokeId);
+                  if (s) {
+                    s.transitioning = true;
+                    if (!s.transitionStartTime) {
+                      s.transitionStartTime = Date.now();
+                    }
+                  }
+                });
+              });
             }
           }
         });
@@ -272,13 +332,29 @@ export default function StrokeOverlay({ editor, room, localParticipant }: Stroke
         if (playPoints.length === 0) return;
 
         let alpha = 1.0;
-        if (stroke.ended) {
-          const elapsed = stroke.endTime !== null ? (now - stroke.endTime) : 0;
-          if (stroke.skipFade === true || elapsed >= 300) {
+        if (stroke.transitioning) {
+          const elapsed = stroke.transitionStartTime !== undefined ? (now - stroke.transitionStartTime) : 0;
+          if (elapsed >= 150) {
             strokesRef.current.delete(strokeId);
             return;
           }
-          alpha = alpha * (1 - elapsed / 300);
+          alpha = 1.0 - elapsed / 1000;
+        } else if (stroke.ended) {
+          if (stroke.waitingForStore) {
+            const elapsed = stroke.endTime !== null ? (now - stroke.endTime) : 0;
+            if (elapsed >= 2000) {
+              strokesRef.current.delete(strokeId);
+              return;
+            }
+            alpha = 1.0; // Freeze at full opacity while waiting for tldraw store sync
+          } else {
+            const elapsed = stroke.endTime !== null ? (now - stroke.endTime) : 0;
+            if (stroke.skipFade === true || elapsed >= 300) {
+              strokesRef.current.delete(strokeId);
+              return;
+            }
+            alpha = alpha * (1 - elapsed / 300);
+          }
         }
 
         ctx.save();

@@ -123,7 +123,7 @@ app.post('/api/exchange-lms-token', async (req, res) => {
       const prismaRole = (rawRole === 'teacher' || rawRole === 'ADMIN') ? 'ADMIN' : 'STUDENT';
       userId = decoded.userId || decoded.id || crypto.randomUUID();
       await db.query(
-        'INSERT INTO "User" (id, name, email, role, status) VALUES ($1, $2, $3, $4, \'APPROVED\')',
+        'INSERT INTO "User" (id, name, email, role, status, "updatedAt") VALUES ($1, $2, $3, $4, \'APPROVED\', NOW())',
         [userId, userName, userEmail, prismaRole]
       );
       finalRole = prismaRole;
