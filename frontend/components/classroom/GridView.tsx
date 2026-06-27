@@ -168,15 +168,40 @@ export default function GridView({
     return 'tiled';
   }, [layoutMode]);
 
-  // Compute the list of participants for the sidebar (gridStudents + teacher if not featured)
+  // Compute the list of participants for the sidebar (gridStudents + teacher/self custom layout)
   const sidebarParticipants = useMemo(() => {
-    const list = [...gridStudents];
     const teacher = isTeacher ? localTrack : teacherTrack;
+    const self = localTrack;
+
+    // Filter out self and teacher from the cloned gridStudents list first to avoid duplication
+    const list = gridStudents.filter(t => 
+      t.participant.sid !== self?.participant.sid && 
+      t.participant.sid !== teacher?.participant.sid
+    );
     
-    if (teacher && featuredTrack?.participant.sid !== teacher.participant.sid) {
-      // Ensure the teacher is not already in the list
-      if (!list.some(t => t.participant.sid === teacher.participant.sid)) {
-        list.unshift(teacher);
+    const isTeacherFeatured = teacher && featuredTrack?.participant.sid === teacher.participant.sid;
+    const isSelfFeatured = self && featuredTrack?.participant.sid === self.participant.sid;
+    
+    if (isTeacher) {
+      if (!isTeacherFeatured && self) {
+        list.unshift(self);
+      }
+    } else {
+      if (isTeacherFeatured) {
+        if (self) {
+          list.unshift(self);
+        }
+      } else if (isSelfFeatured) {
+        if (teacher) {
+          list.unshift(teacher);
+        }
+      } else {
+        if (self) {
+          list.unshift(self);
+        }
+        if (teacher) {
+          list.unshift(teacher);
+        }
       }
     }
     

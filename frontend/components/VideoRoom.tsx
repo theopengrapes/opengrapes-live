@@ -1484,13 +1484,16 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
       return orderedRemoteStudents;
     } else {
       const list = [...orderedRemoteStudents];
-      const filteredList = list.filter(t => t.participant.sid !== localParticipant?.sid);
+      const filteredList = list.filter(t => 
+        t.participant.sid !== localParticipant?.sid &&
+        t.participant.sid !== teacherTrack?.participant.sid
+      );
       if (localTrack) {
-        filteredList.splice(2, 0, localTrack);
+        filteredList.unshift(localTrack);
       }
       return filteredList.filter((t): t is NonNullable<typeof t> => !!t);
     }
-  }, [isTeacher, orderedRemoteStudents, localTrack, localParticipant?.sid]);
+  }, [isTeacher, orderedRemoteStudents, localTrack, localParticipant?.sid, teacherTrack?.participant.sid]);
 
   const showReconnecting = connectionState === 'reconnecting';
 
