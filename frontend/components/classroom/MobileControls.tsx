@@ -556,7 +556,7 @@ export default function MobileControls({
               </div>
 
               {/* Publish Notes / Download Notes (Teacher) */}
-              {isTeacher && (
+              {/* {isTeacher && (
                 <div className="flex flex-col gap-1 border-t border-white/5 pt-1.5 mt-1.5">
                   {exportedPdfUrl ? (
                     <a
@@ -586,7 +586,7 @@ export default function MobileControls({
                     </button>
                   )}
                 </div>
-              )}
+              )} */}
 
             </div>
           )}

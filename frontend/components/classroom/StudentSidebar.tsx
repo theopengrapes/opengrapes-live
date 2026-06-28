@@ -143,14 +143,14 @@ export default function StudentSidebar({
           <div className="flex flex-row overflow-x-auto gap-3 w-full p-3 scrollbar-none bg-[#060b18]/60 backdrop-blur-md border-t border-white/5">
             {/* Teacher Tile */}
             {teacherTrack && (
-              <div className="w-[130px] sm:w-[160px] aspect-video shrink-0">
+              <div className="h-[120px] aspect-video shrink-0">
                 <LazyParticipantTile trackRef={teacherTrack} />
               </div>
             )}
 
             {/* Student Tiles */}
             {sidebarStudents.map((trackRef) => (
-              <div key={trackRef.participant.sid} className="w-[130px] sm:w-[160px] aspect-video shrink-0">
+              <div key={trackRef.participant.sid} className="h-[120px] aspect-video shrink-0">
                 <LazyParticipantTile trackRef={trackRef} />
               </div>
             ))}
