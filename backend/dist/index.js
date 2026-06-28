@@ -39,10 +39,12 @@ app.use((0, cors_1.default)({
     },
 }));
 app.use(express_1.default.json({
+    limit: '10mb',
     verify: (req, res, buf) => {
         req.rawBody = buf;
     }
 }));
+app.use(express_1.default.urlencoded({ limit: '10mb', extended: true }));
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || 'devkey';
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || 'secret';
 const SESSION_TOKEN_SECRET = process.env.SESSION_TOKEN_SECRET || 'opengrapes';
@@ -97,7 +99,7 @@ app.post('/api/exchange-lms-token', async (req, res) => {
             // Map role to Prisma enum values
             const prismaRole = (rawRole === 'teacher' || rawRole === 'ADMIN') ? 'ADMIN' : 'STUDENT';
             userId = decoded.userId || decoded.id || crypto_1.default.randomUUID();
-            await db_1.db.query('INSERT INTO "User" (id, name, email, role, status) VALUES ($1, $2, $3, $4, \'APPROVED\')', [userId, userName, userEmail, prismaRole]);
+            await db_1.db.query('INSERT INTO "User" (id, name, email, role, status, "updatedAt") VALUES ($1, $2, $3, $4, \'APPROVED\', NOW())', [userId, userName, userEmail, prismaRole]);
             finalRole = prismaRole;
         }
         else {
@@ -125,7 +127,7 @@ app.post('/api/exchange-lms-token', async (req, res) => {
                 const insertRes = await db_1.db.query('INSERT INTO "LiveSession" (id, "batchId", "roomId", status, "startedAt", "teacherJoined", "hasNotes") VALUES ($1, $2, $3, \'live\', NOW(), false, false) RETURNING id, "batchId", "roomId", status, "startedAt", "teacherJoined", "hasNotes"', [sessionId, batchId, meetingId]);
                 liveSession = insertRes.rows[0];
                 // Trigger Sync Worker DO initialization
-                const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+                const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
                 const workerSecret = process.env.WORKER_API_SECRET || '';
                 try {
                     const batchRes = await db_1.db.query('SELECT name FROM "Batch" WHERE id = $1', [batchId]);
@@ -384,7 +386,7 @@ app.post('/api/end-class', auth_1.requireLMSOrClassroomAuth, (0, auth_1.requireR
         const activeSession = activeSessionRes.rows[0];
         if (activeSession && activeSession.roomId) {
             const sessionId = activeSession.roomId;
-            const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+            const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
             const workerSecret = process.env.WORKER_API_SECRET || '';
             // 1. Fetch transcript segments and rolling summary from DO
             let transcriptData = { segments: [], rollingSummary: '', sessionMeta: {} };
@@ -439,14 +441,38 @@ Generate structured meeting notes under 600 words. Format the response cleanly i
 - **Student doubts raised**: Summary of doubts asked by students and the answers provided.
 - **Action Items & Homework**: Any future tasks, homework, or revisions mentioned.
 Make the tone professional, structured, and easy for students to study from.`;
-                    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
-                    const geminiRes = await fetch(geminiUrl, {
+                    let geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+                    let geminiRes = await fetch(geminiUrl, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             contents: [{ parts: [{ text: prompt }] }]
                         })
                     });
+                    // Fallback 1: Try gemini-2.5-flash-lite if 2.5-flash fails (e.g. rate limits or quotas)
+                    if (!geminiRes.ok) {
+                        console.warn(`[End Class MoM] Gemini 2.5 Flash failed (status: ${geminiRes.status}). Trying fallback to Gemini 2.5 Flash Lite...`);
+                        geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiKey}`;
+                        geminiRes = await fetch(geminiUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                contents: [{ parts: [{ text: prompt }] }]
+                            })
+                        });
+                    }
+                    // Fallback 2: Try gemini-flash-latest if lite fails
+                    if (!geminiRes.ok) {
+                        console.warn(`[End Class MoM] Gemini 2.5 Flash Lite failed (status: ${geminiRes.status}). Trying fallback to Gemini Flash Latest...`);
+                        geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${geminiKey}`;
+                        geminiRes = await fetch(geminiUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                contents: [{ parts: [{ text: prompt }] }]
+                            })
+                        });
+                    }
                     if (geminiRes.ok) {
                         const data = await geminiRes.json();
                         momContent = (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
@@ -748,7 +774,7 @@ app.post('/api/transcribe', auth_1.requireClassroomAuth, upload.single('audio'),
         const transcriptText = (groqData.text || '').trim();
         // Skip saving empty transcripts or transcription junk placeholders like "[blank_audio]"
         if (transcriptText.length > 0 && !/^\[.*\]$/.test(transcriptText)) {
-            const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+            const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
             const workerSecret = process.env.WORKER_API_SECRET || '';
             await fetch(`${workerUrl}/api/transcript/${sessionId}/segment`, {
                 method: 'POST',
@@ -793,7 +819,7 @@ app.post('/api/doubt', auth_1.requireClassroomAuth, async (req, res) => {
     }
     try {
         // 1. Fetch class transcript segments and rolling summary from DO
-        const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+        const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
         const workerSecret = process.env.WORKER_API_SECRET || '';
         let segments = [];
         let rollingSummary = '';
@@ -825,9 +851,19 @@ app.post('/api/doubt', auth_1.requireClassroomAuth, async (req, res) => {
             return `[${min}:${sec}] ${s.name} (${s.role}): ${s.text}`;
         }).join('\n');
         // 2. Build Gemini prompt content
-        const systemPrompt = `You are a helpful live classroom doubt solver AI. Your job is to answer the student's question clearly, concisely, and accurately based on the class context (topic, summary, and recent transcript) and optional screenshot.
-If the screenshot is provided, explain the whiteboard elements, slides, or diagrams relevant to the doubt.
-Keep your answer under 250 words. Use formatting like bullet points or bold text to make it easy for students to read.`;
+        const systemPrompt = `You are a doubt-solving AI for a live Indian classroom (JEE/NEET/Board Exams/competitive exams). Answer the student's question accurately and concisely using the provided class context (topic, rolling summary, recent transcript) and any attached screenshot.
+
+TRANSCRIPT HANDLING:
+- The transcript is raw real-time Speech-To-Text output. It WILL contain errors: mishearing, wrong spellings, broken words, or phonetic substitutions (e.g. "FITJ" = "FIITJEE", "JAdvanced" = "JEE Advanced", "nit" = "NEET", "limit ex" = "lim x→∞").
+- Treat the transcript as noisy signal, not ground truth. Infer the intended meaning from context.
+- NEVER quote transcript text verbatim. NEVER say "you mentioned" or "the transcript says". Explain concepts in your own words only.
+
+ANSWERING:
+- Answer the student's actual doubt, not a literal interpretation of potentially garbled text.
+- If the doubt is ambiguous due to transcription noise, pick the most likely intended interpretation given the class topic and answer that.
+- Use **bold** for key terms, bullet points for steps or lists.
+- Stay under 250 words.
+- If the screenshot is provided, prioritize it over transcript for understanding the doubt.`;
         const userMessageContent = [];
         let contextStr = `Class Topic: ${topicNotes || 'Not Specified'}\n\n`;
         contextStr += `Class Summary So Far:\n${rollingSummary || 'No summary compiled yet.'}\n\n`;
@@ -835,21 +871,57 @@ Keep your answer under 250 words. Use formatting like bullet points or bold text
         contextStr += `Student Question: ${doubtText}`;
         userMessageContent.push({ text: contextStr });
         if (screenshot) {
-            const matches = screenshot.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
-            if (matches && matches.length === 3) {
-                const mimeType = matches[1];
-                const base64Data = matches[2];
-                userMessageContent.push({
-                    inlineData: {
-                        mimeType: mimeType,
-                        data: base64Data
+            let screenshotUrls = [];
+            try {
+                if (screenshot.startsWith('[')) {
+                    screenshotUrls = JSON.parse(screenshot);
+                }
+                else {
+                    screenshotUrls = [screenshot];
+                }
+            }
+            catch (e) {
+                screenshotUrls = [screenshot];
+            }
+            for (const attachedImage of screenshotUrls) {
+                let mimeType = '';
+                let base64Data = '';
+                if (attachedImage.startsWith('data:')) {
+                    const matches = attachedImage.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+                    if (matches && matches.length === 3) {
+                        mimeType = matches[1];
+                        base64Data = matches[2];
                     }
-                });
+                }
+                else if (attachedImage.startsWith('http://') || attachedImage.startsWith('https://')) {
+                    try {
+                        const imgRes = await fetch(attachedImage);
+                        if (imgRes.ok) {
+                            mimeType = imgRes.headers.get('content-type') || 'image/jpeg';
+                            const arrayBuffer = await imgRes.arrayBuffer();
+                            base64Data = Buffer.from(arrayBuffer).toString('base64');
+                        }
+                        else {
+                            console.error('[Doubt] Failed to fetch screenshot from URL:', attachedImage, imgRes.statusText);
+                        }
+                    }
+                    catch (fetchErr) {
+                        console.error('[Doubt] Error fetching screenshot from URL:', fetchErr);
+                    }
+                }
+                if (mimeType && base64Data) {
+                    userMessageContent.push({
+                        inlineData: {
+                            mimeType: mimeType,
+                            data: base64Data
+                        }
+                    });
+                }
             }
         }
-        // 3. Call Gemini 2.5 Flash API with Streaming (SSE)
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=${geminiKey}`;
-        const geminiRes = await fetch(geminiUrl, {
+        // 3. Call Gemini API with Streaming (SSE) - Using gemini-2.5-flash-lite as primary for speed and quota stability
+        let geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:streamGenerateContent?key=${geminiKey}`;
+        let geminiRes = await fetch(geminiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -857,6 +929,19 @@ Keep your answer under 250 words. Use formatting like bullet points or bold text
                 systemInstruction: { parts: [{ text: systemPrompt }] }
             })
         });
+        // Fallback: Try gemini-flash-latest if 2.5-flash-lite fails (e.g. rate limits or project quotas)
+        if (!geminiRes.ok) {
+            console.warn(`[Doubt] Gemini 2.5 Flash Lite failed (status: ${geminiRes.status}). Trying fallback to Gemini Flash Latest...`);
+            geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:streamGenerateContent?key=${geminiKey}`;
+            geminiRes = await fetch(geminiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{ role: 'user', parts: userMessageContent }],
+                    systemInstruction: { parts: [{ text: systemPrompt }] }
+                })
+            });
+        }
         if (!geminiRes.ok) {
             const errText = await geminiRes.text();
             console.error('[Doubt] Gemini streaming failed:', geminiRes.status, errText);
@@ -865,8 +950,9 @@ Keep your answer under 250 words. Use formatting like bullet points or bold text
         }
         // Set headers for Server-Sent Events (SSE)
         res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Cache-Control', 'no-cache, no-transform');
         res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
         const decoder = new TextDecoder();
         let answerText = '';
         let tempBuffer = '';
@@ -912,9 +998,7 @@ Keep your answer under 250 words. Use formatting like bullet points or bold text
                 }
             }
         }
-        res.write('data: [DONE]\n\n');
-        res.end();
-        // 4. Save doubt history to PostgreSQL
+        // 4. Save doubt history to PostgreSQL (do this BEFORE closing response to prevent race condition)
         try {
             const doubtId = crypto_1.default.randomUUID();
             await db_1.db.query(`
@@ -925,6 +1009,8 @@ Keep your answer under 250 words. Use formatting like bullet points or bold text
         catch (dbErr) {
             console.error('[Doubt] PostgreSQL log error:', dbErr);
         }
+        res.write('data: [DONE]\n\n');
+        res.end();
     }
     catch (error) {
         console.error('Doubt solver error:', error);
@@ -970,14 +1056,27 @@ Requirements:
 1. Keep the new entry under 50 words.
 2. Format: "[MM-MM min]: <summary>" where MM-MM represents the minutes range (e.g., "[10-20 min]: Teacher introduced the concept of F=ma").
 3. Do not rewrite the existing summary, only return the new entry that should be appended to it.`;
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
-        const geminiRes = await fetch(geminiUrl, {
+        // Call Gemini API - Using gemini-2.5-flash-lite directly for speed and quota stability
+        let geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiKey}`;
+        let geminiRes = await fetch(geminiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 contents: [{ parts: [{ text: prompt }] }]
             })
         });
+        // Fallback to gemini-flash-latest if 2.5-flash-lite fails (e.g. rate limits or quotas)
+        if (!geminiRes.ok) {
+            console.warn(`[Summary Update] Gemini 2.5 Flash Lite failed (status: ${geminiRes.status}). Trying fallback to Gemini Flash Latest...`);
+            geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${geminiKey}`;
+            geminiRes = await fetch(geminiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{ parts: [{ text: prompt }] }]
+                })
+            });
+        }
         if (!geminiRes.ok) {
             console.error('[Summary Update] Gemini error:', geminiRes.status, await geminiRes.text());
             res.status(500).send('Failed to generate summary');
@@ -1004,7 +1103,7 @@ app.post('/api/summary/trigger', auth_1.requireClassroomAuth, async (req, res) =
         return;
     }
     try {
-        const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+        const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
         const workerSecret = process.env.WORKER_API_SECRET || '';
         const doRes = await fetch(`${workerUrl}/api/transcript/${sessionId}/trigger-summary`, {
             method: 'POST',
@@ -1027,7 +1126,7 @@ app.post('/api/summary/trigger', auth_1.requireClassroomAuth, async (req, res) =
 app.get('/api/summary/:sessionId', auth_1.requireClassroomAuth, async (req, res) => {
     const { sessionId } = req.params;
     try {
-        const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+        const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
         const workerSecret = process.env.WORKER_API_SECRET || '';
         let rollingSummary = '';
         let topicNotes = '';
@@ -1064,7 +1163,7 @@ app.get('/api/summary/:sessionId', auth_1.requireClassroomAuth, async (req, res)
 app.get('/api/transcript/:sessionId', auth_1.requireClassroomAuth, async (req, res) => {
     const { sessionId } = req.params;
     try {
-        const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+        const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
         const workerSecret = process.env.WORKER_API_SECRET || '';
         const doRes = await fetch(`${workerUrl}/api/transcript/${sessionId}/data`, {
             headers: { 'X-Worker-Secret': workerSecret }
@@ -1081,17 +1180,18 @@ app.get('/api/transcript/:sessionId', auth_1.requireClassroomAuth, async (req, r
         res.status(500).json({ error: 'Internal server error' });
     }
 });
-// GET /api/doubts/:sessionId: Fetch doubts list for classroom display
+// GET /api/doubts/:sessionId: Fetch doubts list for classroom display (private per student/user)
 app.get('/api/doubts/:sessionId', auth_1.requireClassroomAuth, async (req, res) => {
     const { sessionId } = req.params;
+    const currentUserId = req.user.userId;
     try {
         const doubtsRes = await db_1.db.query(`
       SELECT d.id, d."sessionId", d."studentId", d."doubtText", d.answer, d.screenshot, d.timestamp, u.name as "studentName" 
       FROM "Doubt" d
       JOIN "User" u ON d."studentId" = u.id
-      WHERE d."sessionId" = $1
+      WHERE d."sessionId" = $1 AND d."studentId" = $2
       ORDER BY d.timestamp ASC
-    `, [sessionId]);
+    `, [sessionId, currentUserId]);
         const doubts = doubtsRes.rows.map(d => ({
             id: d.id,
             session_id: d.sessionId,
@@ -1121,7 +1221,7 @@ app.post('/api/transcript/:sessionId/topic', auth_1.requireClassroomAuth, (0, au
         return;
     }
     try {
-        const workerUrl = process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787';
+        const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
         const workerSecret = process.env.WORKER_API_SECRET || '';
         const doRes = await fetch(`${workerUrl}/api/transcript/${sessionId}/update-topic`, {
             method: 'POST',
