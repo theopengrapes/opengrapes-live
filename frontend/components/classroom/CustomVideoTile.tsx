@@ -46,8 +46,8 @@ export default function CustomVideoTile({
       ) : (
         <div className="absolute inset-0 bg-[#0d111d] flex items-center justify-center select-none p-4 text-center">
           <span
-            className={`font-bold text-white/90 tracking-wide font-sans truncate max-w-[90%] ${
-              isSidebar ? 'text-xs md:text-sm' : 'text-xl sm:text-2xl md:text-3xl'
+            className={`font-semibold text-white/90 tracking-wide font-sans truncate max-w-[90%] ${
+              isSidebar ? 'text-sm md:text-lg' : 'text-xl sm:text-2xl md:text-3xl'
             }`}
           >
             {name}
@@ -58,7 +58,7 @@ export default function CustomVideoTile({
       {/* 2. Glassmorphic bottom label */}
       {(isCameraEnabled || trackRef.participant.isLocal || isMuted || isSpeaking) && (
         <div
-          className={`absolute bottom-3 left-3 bg-[#090d1a]/60 backdrop-blur-md border border-white/10 rounded-xl px-2.5 py-1.5 flex items-center gap-2 select-none z-10 ${
+          className={`absolute bottom-2 left-2 backdrop-blur-md border border-white/10 rounded-lg px-2.5 py-1.5 flex items-center gap-2 select-none z-10 ${
             isSidebar ? 'scale-90 origin-bottom-left' : ''
           }`}
         >
