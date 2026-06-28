@@ -20,15 +20,66 @@ interface DoubtSolverTabProps {
 
 export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSolverTabProps) {
 	const [doubtText, setDoubtText] = useState('');
-	const [screenshotBase64, setScreenshotBase64] = useState<string | null>(null);
+	const [attachedImages, setAttachedImages] = useState<string[]>([]);
 	const [isCapturing, setIsCapturing] = useState(false);
 	const [isStreaming, setIsStreaming] = useState(false);
 	const [streamedAnswer, setStreamedAnswer] = useState('');
 	const [doubts, setDoubts] = useState<Doubt[]>([]);
 	const [isLoadingHistory, setIsLoadingHistory] = useState(true);
 	const [selectedImage, setSelectedImage] = useState<string | null>(null); // For fullscreen image modal
+	const [activeDoubt, setActiveDoubt] = useState<{ text: string; screenshots: string[] } | null>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const doubtsEndRef = useRef<HTMLDivElement>(null);
+
+	// Helper to parse basic markdown bold (**text**) and bullet lists
+	const renderFormattedAnswer = (text: string) => {
+		if (!text) return null;
+		
+		const lines = text.split('\n');
+		return lines.map((line, lineIdx) => {
+			// Check if it's a bullet point (starts with '-' or '*' or '•')
+			const bulletMatch = line.match(/^[-*•]\s+(.*)$/);
+			
+			// Function to split and parse **bold** text
+			const parseBold = (str: string) => {
+				const parts = str.split(/\*\*([^*]+)\*\*/g);
+				return parts.map((part, idx) => {
+					if (idx % 2 === 1) {
+						return <strong key={idx} className="font-bold text-white">{part}</strong>;
+					}
+					return part;
+				});
+			};
+
+			if (bulletMatch) {
+				return (
+					<div key={lineIdx} className="flex items-start gap-1.5 ml-2 my-1">
+						<span className="text-indigo-400 mt-1 select-none">•</span>
+						<span className="flex-1">{parseBold(bulletMatch[1])}</span>
+					</div>
+				);
+			}
+
+			return (
+				<div key={lineIdx} className={line.trim() === '' ? 'h-2' : 'my-0.5'}>
+					{parseBold(line)}
+				</div>
+			);
+		});
+	};
+
+	// Helper to convert base64 dataURL to Blob for R2 uploads
+	const dataURLtoBlob = (dataurl: string) => {
+		const arr = dataurl.split(',');
+		const mime = arr[0].match(/:(.*?);/)?.[1] || 'image/png';
+		const bstr = atob(arr[1]);
+		let n = bstr.length;
+		const u8arr = new Uint8Array(n);
+		while (n--) {
+			u8arr[n] = bstr.charCodeAt(n);
+		}
+		return new Blob([u8arr], { type: mime });
+	};
 
 	// 1. Fetch doubts history
 	const fetchDoubtsHistory = async () => {
@@ -69,14 +120,31 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 
 	// 3. Handle image upload from computer
 	const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-		const file = e.target.files?.[0];
-		if (!file) return;
+		const files = e.target.files;
+		if (!files) return;
 
-		const reader = new FileReader();
-		reader.onloadend = () => {
-			setScreenshotBase64(reader.result as string);
-		};
-		reader.readAsDataURL(file);
+		Array.from(files).forEach((file) => {
+			if (file.type.startsWith('image/')) {
+				const reader = new FileReader();
+				reader.onloadend = () => {
+					setAttachedImages((prev) => [...prev, reader.result as string]);
+				};
+				reader.readAsDataURL(file);
+			}
+		});
+	};
+
+	// Handle Ctrl+V paste from clipboard
+	const handlePaste = (e: React.ClipboardEvent) => {
+		const file = e.clipboardData.files?.[0];
+		if (file && file.type.startsWith('image/')) {
+			e.preventDefault();
+			const reader = new FileReader();
+			reader.onloadend = () => {
+				setAttachedImages((prev) => [...prev, reader.result as string]);
+			};
+			reader.readAsDataURL(file);
+		}
 	};
 
 	// 4. Handle "Capture Whiteboard" canvas capture
@@ -95,41 +163,21 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 				return;
 			}
 
-			// Get SVG element from Tldraw
-			const svg = await editor.getSvg(shapeIds);
-			if (!svg) {
-				throw new Error('Failed to get SVG from editor');
-			}
+			// Capture the whiteboard frames/shapes directly using Tldraw's native toImage helper
+			const { blob } = await editor.toImage(shapeIds, {
+				format: 'jpeg',
+				background: true,
+				quality: 0.7,
+				scale: 1,
+				bounds: editor.getViewportPageBounds(), // Crop exactly to the student's active viewport page bounds
+			});
 
-			// Serialize SVG to string
-			const svgString = new XMLSerializer().serializeToString(svg);
-			const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
-			const svgUrl = URL.createObjectURL(svgBlob);
-
-			const img = new window.Image();
-			img.onload = () => {
-				const canvas = document.createElement('canvas');
-				// Match SVG viewport size or scale it
-				canvas.width = img.width || 1024;
-				canvas.height = img.height || 768;
-				const ctx = canvas.getContext('2d');
-				if (ctx) {
-					// Draw background
-					ctx.fillStyle = '#0d111d'; // dark whiteboard background
-					ctx.fillRect(0, 0, canvas.width, canvas.height);
-					ctx.drawImage(img, 0, 0);
-					const pngBase64 = canvas.toDataURL('image/png');
-					setScreenshotBase64(pngBase64);
-				}
-				URL.revokeObjectURL(svgUrl);
+			const reader = new FileReader();
+			reader.onloadend = () => {
+				setAttachedImages((prev) => [...prev, reader.result as string]);
 				setIsCapturing(false);
 			};
-			img.onerror = () => {
-				URL.revokeObjectURL(svgUrl);
-				setIsCapturing(false);
-				alert('Failed to process whiteboard screenshot.');
-			};
-			img.src = svgUrl;
+			reader.readAsDataURL(blob);
 		} catch (err) {
 			console.error('Error capturing whiteboard:', err);
 			setIsCapturing(false);
@@ -143,17 +191,54 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 		if (!doubtText.trim() || isStreaming) return;
 
 		const textToSend = doubtText;
-		const imgToSend = screenshotBase64;
+		const imagesToSend = [...attachedImages];
+
+		// Set active doubt preview for streaming state
+		setActiveDoubt({ text: textToSend, screenshots: imagesToSend });
 
 		// Reset state
 		setDoubtText('');
-		setScreenshotBase64(null);
+		setAttachedImages([]);
 		setStreamedAnswer('');
 		setIsStreaming(true);
 
 		try {
 			const accessToken = sessionStorage.getItem('classroom_access_token');
 			if (!accessToken) throw new Error('Unauthenticated');
+
+			// Upload screenshots to R2 in parallel if present
+			let finalScreenshot: string | null = null;
+			if (imagesToSend.length > 0) {
+				try {
+					const SYNC_WORKER_URL = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'https://opengrapes-whiteboard-sync.manasrikhari23.workers.dev').replace(/\/+$/, '');
+					
+					const uploadedUrls = await Promise.all(
+						imagesToSend.map(async (img) => {
+							const uploadId = `${crypto.randomUUID()}-doubt.jpg`;
+							const uploadUrl = `${SYNC_WORKER_URL}/api/uploads/${uploadId}`;
+							const blob = dataURLtoBlob(img);
+							
+							const uploadRes = await fetch(uploadUrl, {
+								method: 'POST',
+								headers: { 'Content-Type': blob.type },
+								body: blob,
+							});
+
+							if (!uploadRes.ok) {
+								throw new Error(`R2 upload failed: ${uploadRes.status}`);
+							}
+							return uploadUrl;
+						})
+					);
+					
+					finalScreenshot = JSON.stringify(uploadedUrls);
+					console.log('[DoubtSolver] Screenshots uploaded to R2 successfully:', finalScreenshot);
+				} catch (uploadErr) {
+					console.error('[DoubtSolver] Failed to upload screenshots to R2, falling back to base64 array:', uploadErr);
+					// Fallback to sending base64 raw string array
+					finalScreenshot = JSON.stringify(imagesToSend);
+				}
+			}
 
 			const response = await fetch('/api/doubt', {
 				method: 'POST',
@@ -164,7 +249,7 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 				body: JSON.stringify({
 					sessionId,
 					doubtText: textToSend,
-					screenshot: imgToSend,
+					screenshot: finalScreenshot,
 				}),
 			});
 
@@ -213,8 +298,10 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 			console.error('Error sending doubt:', err);
 			setStreamedAnswer('Sorry, something went wrong while communicating with the doubt solver AI. Please try again.');
 		} finally {
+			await fetchDoubtsHistory(); // Wait for the new history to be loaded and set in state first
 			setIsStreaming(false);
-			fetchDoubtsHistory(); // Refresh history
+			setActiveDoubt(null); // Clear streaming preview
+			setStreamedAnswer(''); // Clear active streamed text state
 		}
 	};
 
@@ -236,16 +323,38 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 
 			{/* Scrollable Container */}
 			<div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
-				{/* Empty State */}
+				{/* Empty State & Instructions */}
 				{!isStreaming && doubts.length === 0 && !isLoadingHistory && (
-					<div className="flex flex-col items-center justify-center text-center p-8 border border-dashed border-white/5 rounded-2xl bg-white/[0.01] my-4">
-						<IconAlertCircle className="w-8 h-8 text-indigo-400/50 mb-3" />
-						<h5 className="font-semibold text-sm text-white/70">No doubts asked yet</h5>
-						<p className="text-xs text-foreground/40 max-w-xs mt-1">
-							{isTeacher 
-								? 'When students ask doubts, they will appear here in real-time.'
-								: 'Stuck on something? Type your doubt below, attach whiteboard drawings, and get instant answers.'}
-						</p>
+					<div className="space-y-4 my-2">
+						{/* Welcome Message */}
+						<div className="flex flex-col items-center justify-center text-center p-6 border border-dashed border-white/5 rounded-2xl bg-white/[0.01]">
+							<IconAlertCircle className="w-8 h-8 text-indigo-400/50 mb-3 animate-pulse" />
+							<h5 className="font-semibold text-sm text-white/80">Your Private AI Study Assistant</h5>
+							<p className="text-xs text-[#C2CCDE]/50 max-w-xs mt-1 leading-relaxed">
+								Ask questions about class concepts, slides, or topics. Your conversation is 100% private.
+							</p>
+						</div>
+
+						{/* Instructions Card */}
+						<div className="p-5 rounded-2xl bg-indigo-500/[0.02] border border-indigo-500/10 space-y-3.5 shadow-sm">
+							<h6 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">
+								How to use the Doubt Solver
+							</h6>
+							<ul className="space-y-3 text-xs text-[#C2CCDE] leading-relaxed">
+								<li className="flex items-start gap-2.5">
+									<span className="flex items-center justify-center w-5 h-5 rounded-full bg-indigo-500/10 text-indigo-400 font-bold text-[10px] shrink-0 mt-0.5">1</span>
+									<span><strong>Type your doubt</strong> in the input field at the bottom of the tab.</span>
+								</li>
+								<li className="flex items-start gap-2.5">
+									<span className="flex items-center justify-center w-5 h-5 rounded-full bg-indigo-500/10 text-indigo-400 font-bold text-[10px] shrink-0 mt-0.5">2</span>
+									<span><strong>Add optional context</strong>: Click <IconPhoto className="w-3.5 h-3.5 inline mx-0.5 text-indigo-300" /> to upload an image from your device, or click <IconCamera className="w-3.5 h-3.5 inline mx-0.5 text-indigo-300" /> to take a snapshot of the whiteboard.</span>
+								</li>
+								<li className="flex items-start gap-2.5">
+									<span className="flex items-center justify-center w-5 h-5 rounded-full bg-indigo-500/10 text-indigo-400 font-bold text-[10px] shrink-0 mt-0.5">3</span>
+									<span><strong>Submit and stream</strong>: Hit send and the AI will read the class transcript, notes, and screenshot to stream a context-aware answer.</span>
+								</li>
+							</ul>
+						</div>
 					</div>
 				)}
 
@@ -260,7 +369,7 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 							<div key={d.id} className="p-4 rounded-xl bg-white/[0.02] border border-white/5 space-y-3 shadow-sm hover:border-white/10 transition-colors">
 								<div className="flex justify-between items-center text-[10px]">
 									<span className="font-bold text-indigo-400">
-										{isTeacher ? d.studentName : 'You asked'}
+										You asked
 									</span>
 									<span className="text-foreground/30">
 										{new Date(d.timestamp + ' UTC').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -271,31 +380,72 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 									{d.doubt_text}
 								</div>
 
-								{d.screenshot && (
-									<div className="relative group w-32 aspect-video rounded-lg overflow-hidden border border-white/10 cursor-pointer shadow-md" onClick={() => setSelectedImage(d.screenshot)}>
-										<img src={d.screenshot} alt="Screenshot attachment" className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
-										<div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-											<IconMaximize className="w-4 h-4 text-white" />
+								{d.screenshot && (() => {
+									let imgs: string[] = [];
+									try {
+										if (d.screenshot.startsWith('[')) {
+											imgs = JSON.parse(d.screenshot);
+										} else {
+											imgs = [d.screenshot];
+										}
+									} catch (e) {
+										imgs = [d.screenshot];
+									}
+									return imgs.length > 0 && (
+										<div className="flex flex-wrap gap-2">
+											{imgs.map((imgUrl, idx) => (
+												<div
+													key={idx}
+													className="relative group w-32 aspect-video rounded-lg overflow-hidden border border-white/10 cursor-pointer shadow-md"
+													onClick={() => setSelectedImage(imgUrl)}
+												>
+													<img src={imgUrl} alt={`Screenshot ${idx + 1}`} className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
+													<div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+														<IconMaximize className="w-4 h-4 text-white" />
+													</div>
+												</div>
+											))}
 										</div>
-									</div>
-								)}
+									);
+								})()}
 
-								<div className="p-3.5 rounded-lg bg-surface-light/5 border-l-2 border-indigo-500/50 text-xs text-[#C2CCDE] leading-relaxed whitespace-pre-wrap">
-									{d.answer}
+								<div className="p-3.5 rounded-lg bg-surface-light/5 border-l-2 border-indigo-500/50 text-xs text-[#C2CCDE] leading-relaxed">
+									{renderFormattedAnswer(d.answer)}
 								</div>
 							</div>
 						))}
 
 						{/* Render Active Streaming Doubt */}
-						{isStreaming && (
+						{isStreaming && activeDoubt && (
 							<div className="p-4 rounded-xl bg-indigo-500/5 border border-indigo-500/10 space-y-3 animate-pulse">
 								<div className="flex justify-between items-center text-[10px]">
-									<span className="font-bold text-indigo-400">Asking solver...</span>
+									<span className="font-bold text-indigo-400">You asked (Generating...)</span>
 									<IconLoader2 className="w-3.5 h-3.5 text-indigo-400 animate-spin" />
 								</div>
 								
-								<div className="p-3.5 rounded-lg bg-surface-light/10 border-l-2 border-indigo-400 text-xs text-[#C2CCDE] leading-relaxed whitespace-pre-wrap min-h-[50px]">
-									{streamedAnswer || 'Formulating prompt and waiting for AI response...'}
+								<div className="text-sm font-medium text-white/90 leading-snug">
+									{activeDoubt.text}
+								</div>
+
+								{activeDoubt.screenshots && activeDoubt.screenshots.length > 0 && (
+									<div className="flex flex-wrap gap-2">
+										{activeDoubt.screenshots.map((imgUrl, idx) => (
+											<div
+												key={idx}
+												className="relative group w-32 aspect-video rounded-lg overflow-hidden border border-white/10 cursor-pointer shadow-md"
+												onClick={() => setSelectedImage(imgUrl)}
+											>
+												<img src={imgUrl} alt={`Screenshot ${idx + 1}`} className="w-full h-full object-cover" />
+												<div className="absolute inset-0 bg-black/40 opacity-0 hover:opacity-100 flex items-center justify-center transition-opacity">
+													<IconMaximize className="w-4 h-4 text-white" />
+												</div>
+											</div>
+										))}
+									</div>
+								)}
+
+								<div className="p-3.5 rounded-lg bg-surface-light/10 border-l-2 border-indigo-400 text-xs text-[#C2CCDE] leading-relaxed min-h-[50px]">
+									{streamedAnswer ? renderFormattedAnswer(streamedAnswer) : 'Formulating prompt and waiting for AI response...'}
 								</div>
 							</div>
 						)}
@@ -305,8 +455,8 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 				)}
 			</div>
 
-			{/* Bottom Input Area (Student Only) */}
-			{!isTeacher && (
+			{/* Bottom Input Area (Available for both Student and Teacher) */}
+			{true && (
 				<form onSubmit={handleSubmitDoubt} className="p-3 border-t border-white/5 bg-surface/20 space-y-3">
 					{/* AI Context Pill */}
 					<div className="flex items-center">
@@ -321,18 +471,34 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 						</span>
 					</div>
 
-					{/* Screenshot Preview */}
-					{screenshotBase64 && (
-						<div className="relative inline-block border border-white/10 rounded-xl overflow-hidden shadow-lg">
-							<img src={screenshotBase64} alt="Doubt attachment preview" className="h-16 w-28 object-cover" />
-							<button
-								type="button"
-								onClick={() => setScreenshotBase64(null)}
-								className="absolute top-1 right-1 p-1 bg-black/60 rounded-full hover:bg-red-500/80 transition-colors text-white cursor-pointer"
-								title="Remove screenshot"
-							>
-								<IconTrash className="w-3.5 h-3.5" />
-							</button>
+					{/* Screenshot Previews */}
+					{attachedImages.length > 0 && (
+						<div className="flex flex-wrap gap-3 pb-1 pt-1">
+							{attachedImages.map((img, idx) => (
+								<div key={idx} className="relative pt-1.5 pr-1.5 shrink-0">
+									<div
+										onClick={() => setSelectedImage(img)}
+										className="relative w-28 h-16 rounded-xl border border-white/10 overflow-hidden shadow-lg cursor-pointer group transition-colors"
+										title="Click to view full screen"
+									>
+										<img src={img} alt="Doubt attachment preview" className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform" />
+										<div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+											<IconMaximize className="w-4 h-4 text-white" />
+										</div>
+									</div>
+									<button
+										type="button"
+										onClick={(e) => {
+											e.stopPropagation();
+											setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
+										}}
+										className="absolute top-0 right-0 bg-red-500 hover:bg-red-650 text-white rounded-full p-0.5 shadow-sm transition-colors cursor-pointer z-10 animate-in fade-in duration-100"
+										title="Remove image"
+									>
+										<IconTrash className="w-3.5 h-3.5" />
+									</button>
+								</div>
+							))}
 						</div>
 					)}
 
@@ -351,6 +517,7 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 							ref={fileInputRef}
 							accept="image/*"
 							onChange={handleImageUpload}
+							multiple
 							className="hidden"
 						/>
 
@@ -374,7 +541,8 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 							type="text"
 							value={doubtText}
 							onChange={(e) => setDoubtText(e.target.value)}
-							placeholder="Type your doubt here..."
+							onPaste={handlePaste}
+							placeholder="Type doubt, paste image, or click attachments..."
 							disabled={isStreaming}
 							className="flex-1 px-4 py-2.5 rounded-xl bg-white/[0.04] border border-white/5 focus:border-indigo-500/50 outline-none text-sm text-white placeholder-[#C2CCDE]/30 transition-all font-sans"
 						/>
@@ -382,7 +550,7 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 						{/* Submit Button */}
 						<button
 							type="submit"
-							disabled={!doubtText.trim() || isStreaming}
+							disabled={(!doubtText.trim() && attachedImages.length === 0) || isStreaming}
 							className="p-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50 disabled:bg-[#111827] cursor-pointer flex items-center justify-center"
 						>
 							<IconSend className="w-4 h-4" />

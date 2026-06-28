@@ -40,10 +40,12 @@ app.use(cors({
   },
 }));
 app.use(express.json({
+  limit: '10mb',
   verify: (req: any, res, buf) => {
     req.rawBody = buf;
   }
 }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || 'devkey';
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || 'secret';
@@ -528,14 +530,40 @@ Generate structured meeting notes under 600 words. Format the response cleanly i
 - **Action Items & Homework**: Any future tasks, homework, or revisions mentioned.
 Make the tone professional, structured, and easy for students to study from.`;
 
-          const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
-          const geminiRes = await fetch(geminiUrl, {
+          let geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+          let geminiRes = await fetch(geminiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               contents: [{ parts: [{ text: prompt }] }]
             })
           });
+
+          // Fallback 1: Try gemini-2.5-flash-lite if 2.5-flash fails (e.g. rate limits or quotas)
+          if (!geminiRes.ok) {
+            console.warn(`[End Class MoM] Gemini 2.5 Flash failed (status: ${geminiRes.status}). Trying fallback to Gemini 2.5 Flash Lite...`);
+            geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiKey}`;
+            geminiRes = await fetch(geminiUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }]
+              })
+            });
+          }
+
+          // Fallback 2: Try gemini-flash-latest if lite fails
+          if (!geminiRes.ok) {
+            console.warn(`[End Class MoM] Gemini 2.5 Flash Lite failed (status: ${geminiRes.status}). Trying fallback to Gemini Flash Latest...`);
+            geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${geminiKey}`;
+            geminiRes = await fetch(geminiUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }]
+              })
+            });
+          }
 
           if (geminiRes.ok) {
             const data = await geminiRes.json() as any;
@@ -969,9 +997,19 @@ app.post('/api/doubt', requireClassroomAuth, async (req, res) => {
     }).join('\n');
 
     // 2. Build Gemini prompt content
-    const systemPrompt = `You are a helpful live classroom doubt solver AI. Your job is to answer the student's question clearly, concisely, and accurately based on the class context (topic, summary, and recent transcript) and optional screenshot.
-If the screenshot is provided, explain the whiteboard elements, slides, or diagrams relevant to the doubt.
-Keep your answer under 250 words. Use formatting like bullet points or bold text to make it easy for students to read.`;
+    const systemPrompt = `You are a doubt-solving AI for a live Indian classroom (JEE/NEET/Board Exams/competitive exams). Answer the student's question accurately and concisely using the provided class context (topic, rolling summary, recent transcript) and any attached screenshot.
+
+TRANSCRIPT HANDLING:
+- The transcript is raw real-time Speech-To-Text output. It WILL contain errors: mishearing, wrong spellings, broken words, or phonetic substitutions (e.g. "FITJ" = "FIITJEE", "JAdvanced" = "JEE Advanced", "nit" = "NEET", "limit ex" = "lim x→∞").
+- Treat the transcript as noisy signal, not ground truth. Infer the intended meaning from context.
+- NEVER quote transcript text verbatim. NEVER say "you mentioned" or "the transcript says". Explain concepts in your own words only.
+
+ANSWERING:
+- Answer the student's actual doubt, not a literal interpretation of potentially garbled text.
+- If the doubt is ambiguous due to transcription noise, pick the most likely intended interpretation given the class topic and answer that.
+- Use **bold** for key terms, bullet points for steps or lists.
+- Stay under 250 words.
+- If the screenshot is provided, prioritize it over transcript for understanding the doubt.`;
 
     const userMessageContent: any[] = [];
     let contextStr = `Class Topic: ${topicNotes || 'Not Specified'}\n\n`;
@@ -982,22 +1020,56 @@ Keep your answer under 250 words. Use formatting like bullet points or bold text
     userMessageContent.push({ text: contextStr });
 
     if (screenshot) {
-      const matches = screenshot.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
-      if (matches && matches.length === 3) {
-        const mimeType = matches[1];
-        const base64Data = matches[2];
-        userMessageContent.push({
-          inlineData: {
-            mimeType: mimeType,
-            data: base64Data
+      let screenshotUrls: string[] = [];
+      try {
+        if (screenshot.startsWith('[')) {
+          screenshotUrls = JSON.parse(screenshot);
+        } else {
+          screenshotUrls = [screenshot];
+        }
+      } catch (e) {
+        screenshotUrls = [screenshot];
+      }
+
+      for (const attachedImage of screenshotUrls) {
+        let mimeType = '';
+        let base64Data = '';
+
+        if (attachedImage.startsWith('data:')) {
+          const matches = attachedImage.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
+          if (matches && matches.length === 3) {
+            mimeType = matches[1];
+            base64Data = matches[2];
           }
-        });
+        } else if (attachedImage.startsWith('http://') || attachedImage.startsWith('https://')) {
+          try {
+            const imgRes = await fetch(attachedImage);
+            if (imgRes.ok) {
+              mimeType = imgRes.headers.get('content-type') || 'image/jpeg';
+              const arrayBuffer = await imgRes.arrayBuffer();
+              base64Data = Buffer.from(arrayBuffer).toString('base64');
+            } else {
+              console.error('[Doubt] Failed to fetch screenshot from URL:', attachedImage, imgRes.statusText);
+            }
+          } catch (fetchErr) {
+            console.error('[Doubt] Error fetching screenshot from URL:', fetchErr);
+          }
+        }
+
+        if (mimeType && base64Data) {
+          userMessageContent.push({
+            inlineData: {
+              mimeType: mimeType,
+              data: base64Data
+            }
+          });
+        }
       }
     }
 
-    // 3. Call Gemini 2.5 Flash API with Streaming (SSE)
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=${geminiKey}`;
-    const geminiRes = await fetch(geminiUrl, {
+    // 3. Call Gemini API with Streaming (SSE) - Using gemini-2.5-flash-lite as primary for speed and quota stability
+    let geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:streamGenerateContent?key=${geminiKey}`;
+    let geminiRes = await fetch(geminiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1005,6 +1077,20 @@ Keep your answer under 250 words. Use formatting like bullet points or bold text
         systemInstruction: { parts: [{ text: systemPrompt }] }
       })
     });
+
+    // Fallback: Try gemini-flash-latest if 2.5-flash-lite fails (e.g. rate limits or project quotas)
+    if (!geminiRes.ok) {
+      console.warn(`[Doubt] Gemini 2.5 Flash Lite failed (status: ${geminiRes.status}). Trying fallback to Gemini Flash Latest...`);
+      geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:streamGenerateContent?key=${geminiKey}`;
+      geminiRes = await fetch(geminiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: userMessageContent }],
+          systemInstruction: { parts: [{ text: systemPrompt }] }
+        })
+      });
+    }
 
     if (!geminiRes.ok) {
       const errText = await geminiRes.text();
@@ -1015,8 +1101,9 @@ Keep your answer under 250 words. Use formatting like bullet points or bold text
 
     // Set headers for Server-Sent Events (SSE)
     res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
 
     const decoder = new TextDecoder();
     let answerText = '';
@@ -1066,10 +1153,7 @@ Keep your answer under 250 words. Use formatting like bullet points or bold text
       }
     }
 
-    res.write('data: [DONE]\n\n');
-    res.end();
-
-    // 4. Save doubt history to PostgreSQL
+    // 4. Save doubt history to PostgreSQL (do this BEFORE closing response to prevent race condition)
     try {
       const doubtId = crypto.randomUUID();
       await db.query(`
@@ -1079,6 +1163,9 @@ Keep your answer under 250 words. Use formatting like bullet points or bold text
     } catch (dbErr) {
       console.error('[Doubt] PostgreSQL log error:', dbErr);
     }
+
+    res.write('data: [DONE]\n\n');
+    res.end();
 
   } catch (error) {
     console.error('Doubt solver error:', error);
@@ -1130,14 +1217,28 @@ Requirements:
 2. Format: "[MM-MM min]: <summary>" where MM-MM represents the minutes range (e.g., "[10-20 min]: Teacher introduced the concept of F=ma").
 3. Do not rewrite the existing summary, only return the new entry that should be appended to it.`;
 
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
-    const geminiRes = await fetch(geminiUrl, {
+    // Call Gemini API - Using gemini-2.5-flash-lite directly for speed and quota stability
+    let geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiKey}`;
+    let geminiRes = await fetch(geminiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }]
       })
     });
+
+    // Fallback to gemini-flash-latest if 2.5-flash-lite fails (e.g. rate limits or quotas)
+    if (!geminiRes.ok) {
+      console.warn(`[Summary Update] Gemini 2.5 Flash Lite failed (status: ${geminiRes.status}). Trying fallback to Gemini Flash Latest...`);
+      geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${geminiKey}`;
+      geminiRes = await fetch(geminiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }]
+        })
+      });
+    }
 
     if (!geminiRes.ok) {
       console.error('[Summary Update] Gemini error:', geminiRes.status, await geminiRes.text());
@@ -1254,17 +1355,18 @@ app.get('/api/transcript/:sessionId', requireClassroomAuth, async (req, res) => 
   }
 });
 
-// GET /api/doubts/:sessionId: Fetch doubts list for classroom display
+// GET /api/doubts/:sessionId: Fetch doubts list for classroom display (private per student/user)
 app.get('/api/doubts/:sessionId', requireClassroomAuth, async (req, res) => {
   const { sessionId } = req.params;
+  const currentUserId = req.user!.userId;
   try {
     const doubtsRes = await db.query(`
       SELECT d.id, d."sessionId", d."studentId", d."doubtText", d.answer, d.screenshot, d.timestamp, u.name as "studentName" 
       FROM "Doubt" d
       JOIN "User" u ON d."studentId" = u.id
-      WHERE d."sessionId" = $1
+      WHERE d."sessionId" = $1 AND d."studentId" = $2
       ORDER BY d.timestamp ASC
-    `, [sessionId]);
+    `, [sessionId, currentUserId]);
     
     const doubts = doubtsRes.rows.map(d => ({
       id: d.id,

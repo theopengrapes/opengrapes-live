@@ -2539,7 +2539,7 @@ export default function VideoRoom({
       adaptiveStream: true,
       dynacast: true,
       videoCaptureDefaults: {
-        resolution: { width: 960, height: 540, frameRate: 24 },
+        resolution: { width: 1280, height: 720, frameRate: 30 },
         deviceId: videoDeviceId || undefined,
       },
       audioCaptureDefaults: {
