@@ -1026,14 +1026,25 @@ ANSWERING & MATH/CHEMISTRY FORMATTING:
             }
           }
         } else if (attachedImage.startsWith('http://') || attachedImage.startsWith('https://')) {
-          const ext = attachedImage.split('.').pop()?.toLowerCase();
-          const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
-          userMessageContent.push({
-            fileData: {
-              fileUri: attachedImage,
-              mimeType: mimeType
+          // Fetch the image from Cloudflare R2 and convert it to base64 inlineData
+          try {
+            const imgRes = await fetch(attachedImage);
+            if (imgRes.ok) {
+              const arrayBuffer = await imgRes.arrayBuffer();
+              const base64Data = Buffer.from(arrayBuffer).toString('base64');
+              const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+              userMessageContent.push({
+                inlineData: {
+                  mimeType: contentType,
+                  data: base64Data
+                }
+              });
+            } else {
+              console.warn(`[Doubt] Failed to fetch image from R2: Status ${imgRes.status}`);
             }
-          });
+          } catch (fetchErr: any) {
+            console.error('[Doubt] Error fetching image from R2 URL:', fetchErr.message);
+          }
         }
       }
     }
