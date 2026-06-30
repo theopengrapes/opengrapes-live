@@ -11,8 +11,9 @@ import {
   useParticipants,
   useMediaDeviceSelect,
 } from '@livekit/components-react';
-import { Track, Room, RoomOptions, RoomConnectOptions, RoomEvent, DisconnectReason } from 'livekit-client';
+import { Track, Room, RoomOptions, RoomConnectOptions, RoomEvent, DisconnectReason, LocalVideoTrack } from 'livekit-client';
 import { useMemo, useEffect, useState, useCallback, useRef } from 'react';
+import { useScreenShareOptimizer, ScreenShareQualityMode } from '../hooks/useScreenShareOptimizer';
 import WhiteboardWrapper from './WhiteboardWrapper';
 import { useAudioTranscriber } from '../hooks/useAudioTranscriber';
 import { decodeJwt } from '@/lib/api';
@@ -112,6 +113,45 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
   const connectionState = useConnectionState();
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled, isScreenShareEnabled } = useLocalParticipant();
   const isTeacher = localParticipant?.metadata === 'teacher';
+
+  const [screenShareQuality, setScreenShareQuality] = useState<ScreenShareQualityMode>('standard');
+
+  // Trigger dynamic screenshare optimizer hook
+  useScreenShareOptimizer({
+    localParticipant,
+    isScreenShareEnabled,
+    quality: screenShareQuality,
+  });
+
+  // Apply tiered camera quality limits upon initial connection
+  useEffect(() => {
+    if (connectionState === 'connected' && localParticipant) {
+      const isTeacherUser = localParticipant.metadata === 'teacher';
+      const targetBitrate = isTeacherUser ? 1_500_000 : 800_000;
+      const targetFps = isTeacherUser ? 30 : 24;
+
+      const pub = localParticipant.getTrackPublication(Track.Source.Camera);
+      if (pub && pub.track) {
+        const sender = pub.track.sender;
+        if (sender) {
+          try {
+            const params = sender.getParameters();
+            if (params.encodings && params.encodings[0]) {
+              params.encodings[0].maxBitrate = targetBitrate;
+              sender.setParameters(params);
+            }
+          } catch (e) {
+            console.warn('[VideoRoom] Failed to set camera bitrate parameter on connect:', e);
+          }
+        }
+        try {
+          pub.track.mediaStreamTrack.applyConstraints({ frameRate: targetFps });
+        } catch (e) {
+          console.warn('[VideoRoom] Failed to apply camera FPS constraint on connect:', e);
+        }
+      }
+    }
+  }, [connectionState, localParticipant]);
 
   const [cameraOn, setCameraOn] = useState(isCameraEnabled);
   const [micOn, setMicOn] = useState(isMicrophoneEnabled);
@@ -1152,31 +1192,57 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
 
   const toggleCamera = useCallback(async () => {
     if (localParticipant) {
-      await localParticipant.setCameraEnabled(!isCameraEnabled);
+      const isTeacherUser = localParticipant.metadata === 'teacher';
+      const targetBitrate = isTeacherUser ? 1_500_000 : 800_000;
+      const targetFps = isTeacherUser ? 30 : 24;
+
+      await localParticipant.setCameraEnabled(!isCameraEnabled, undefined, {
+        videoCodec: 'vp9',
+        backupCodec: true, // Allow H.264 fallback for cameras
+        simulcast: true,
+        videoEncoding: {
+          maxBitrate: targetBitrate,
+          maxFramerate: targetFps,
+        }
+      });
     }
   }, [localParticipant, isCameraEnabled]);
 
   const toggleScreenShare = useCallback(async () => {
     if (localParticipant) {
       try {
-        // Optimize publishing options for screen sharing legible text:
-        // Set 1080p, 15fps framerate limit, and text optimization hint
+        const isSafariOrIOS = /Safari/i.test(navigator.userAgent) && !/Chrome/i.test(navigator.userAgent);
+        const preferredCodec = isSafariOrIOS ? 'h264' : 'vp9';
+
+        let maxFps = 30;
+        let maxBitrate = 2_000_000;
+
+        if (screenShareQuality === 'low') {
+          maxFps = 10;
+          maxBitrate = 800_000;
+        } else if (screenShareQuality === 'high') {
+          maxFps = 30;
+          maxBitrate = 3_000_000;
+        }
+
         await localParticipant.setScreenShareEnabled(!isScreenShareEnabled, {
           audio: true,
           contentHint: 'text',
-          resolution: { width: 1920, height: 1080, frameRate: 15 },
+          resolution: { width: 1920, height: 1080, frameRate: maxFps },
         }, {
-          simulcast: true,
+          simulcast: !isSafariOrIOS,
+          videoCodec: preferredCodec,
+          backupCodec: false, // Prevent dual-encoding CPU overhead on publisher
           screenShareEncoding: {
-            maxFramerate: 15,
-            maxBitrate: 1500000,
+            maxFramerate: maxFps,
+            maxBitrate: maxBitrate,
           }
         });
       } catch (err) {
         console.error('Failed to toggle screen share:', err);
       }
     }
-  }, [localParticipant, isScreenShareEnabled]);
+  }, [localParticipant, isScreenShareEnabled, screenShareQuality]);
 
   // Whiteboard Toggle that broadcasts state to all participants
   const toggleWhiteboard = useCallback(async () => {
@@ -2538,6 +2604,11 @@ export default function VideoRoom({
     const roomOptions: RoomOptions = {
       adaptiveStream: true,
       dynacast: true,
+      publishDefaults: {
+        videoCodec: 'vp9',
+        backupCodec: true, // Allow fallback to H.264 dynamically on receiver-level or for older clients
+        degradationPreference: 'balanced', // Keep camera feeds balanced/fluid under low bandwidth
+      },
       videoCaptureDefaults: {
         resolution: { width: 1280, height: 720, frameRate: 30 },
         deviceId: videoDeviceId || undefined,
