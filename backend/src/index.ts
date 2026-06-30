@@ -11,6 +11,7 @@ import path from 'path';
 
 import { db } from './db';
 import { requireAuth, requireRole, requireClassroomAuth, requireLMSOrClassroomAuth } from './auth';
+import { requestAI } from './ai-provider';
 
 // Ensure uploads folder exists
 const uploadsDir = path.join(__dirname, '../uploads');
@@ -530,46 +531,20 @@ Generate structured meeting notes under 600 words. Format the response cleanly i
 - **Action Items & Homework**: Any future tasks, homework, or revisions mentioned.
 Make the tone professional, structured, and easy for students to study from.`;
 
-          let geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
-          let geminiRes = await fetch(geminiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+          let geminiRes;
+          try {
+            geminiRes = await requestAI({
               contents: [{ parts: [{ text: prompt }] }]
-            })
-          });
-
-          // Fallback 1: Try gemini-2.5-flash-lite if 2.5-flash fails (e.g. rate limits or quotas)
-          if (!geminiRes.ok) {
-            console.warn(`[End Class MoM] Gemini 2.5 Flash failed (status: ${geminiRes.status}). Trying fallback to Gemini 2.5 Flash Lite...`);
-            geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiKey}`;
-            geminiRes = await fetch(geminiUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }]
-              })
             });
-          }
-
-          // Fallback 2: Try gemini-flash-latest if lite fails
-          if (!geminiRes.ok) {
-            console.warn(`[End Class MoM] Gemini 2.5 Flash Lite failed (status: ${geminiRes.status}). Trying fallback to Gemini Flash Latest...`);
-            geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${geminiKey}`;
-            geminiRes = await fetch(geminiUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }]
-              })
-            });
-          }
-
-          if (geminiRes.ok) {
-            const data = await geminiRes.json() as any;
-            momContent = (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
-          } else {
-            console.error('[End Class MoM] Gemini returned error:', geminiRes.status, await geminiRes.text());
+            
+            if (geminiRes.ok) {
+              const data = await geminiRes.json() as any;
+              momContent = (data.choices?.[0]?.message?.content || '').trim();
+            } else {
+              console.error('[End Class MoM] AI returned error:', geminiRes.status, await geminiRes.text());
+            }
+          } catch (err: any) {
+            console.error('[End Class MoM] AI call failed:', err.message);
           }
         } catch (err) {
           console.error('Failed to generate MoM with Gemini:', err);
@@ -942,7 +917,7 @@ app.post('/api/transcribe', requireClassroomAuth, upload.single('audio'), async 
 
 // POST /api/doubt: Streams Gemini 2.5 Flash response to student doubts and logs to SQLite
 app.post('/api/doubt', requireClassroomAuth, async (req, res) => {
-  const { sessionId, doubtText, screenshot } = req.body;
+  const { sessionId, doubtText, screenshot, enableThinking } = req.body;
   const studentId = req.user!.userId;
   const studentName = req.user!.name;
 
@@ -951,9 +926,9 @@ app.post('/api/doubt', requireClassroomAuth, async (req, res) => {
     return;
   }
 
-  const geminiKey = process.env.GEMINI_API_KEY;
-  if (!geminiKey) {
-    res.status(500).json({ error: 'GEMINI_API_KEY is not set' });
+  const hasGeminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_KEY_1;
+  if (!hasGeminiKey) {
+    res.status(500).json({ error: 'No Gemini API keys configured' });
     return;
   }
 
@@ -1004,12 +979,15 @@ TRANSCRIPT HANDLING:
 - Treat the transcript as noisy signal, not ground truth. Infer the intended meaning from context.
 - NEVER quote transcript text verbatim. NEVER say "you mentioned" or "the transcript says". Explain concepts in your own words only.
 
-ANSWERING:
+ANSWERING & MATH/CHEMISTRY FORMATTING:
 - Answer the student's actual doubt, not a literal interpretation of potentially garbled text.
 - If the doubt is ambiguous due to transcription noise, pick the most likely intended interpretation given the class topic and answer that.
 - Use **bold** for key terms, bullet points for steps or lists.
-- Stay under 250 words.
-- If the screenshot is provided, prioritize it over transcript for understanding the doubt.`;
+- Stay under 350 words. If a physics/math derivation is required, lay out steps cleanly but keep text explanations concise.
+- If the screenshot is provided, prioritize it over transcript for understanding the doubt.
+- FORMAT MATH & BOXED ANSWERS: Format all equations, formulas, math symbols, variables, and expressions in standard LaTeX format. Use $...$ for inline math (e.g., $e = mc^2$) and $$...$$ for display/block equations. If you highlight a final numerical or variable answer, ALWAYS wrap it in \\boxed{...} inside $ or $$, e.g., $\\boxed{13}$ or $$\\boxed{x = \\frac{-b \\pm \\sqrt{d}}{2a}}$$. NEVER output raw \\boxed without $ or $$ wrappers.
+- FORMAT CHEMISTRY: Always wrap chemical formulas and equations in LaTeX math mode using \\ce{...} with curly braces inside $ or $$, e.g., $\\ce{2H2 + O2 -> 2H2O}$ or $\\ce{H2SO4}$. NEVER output raw \\ce without braces, and NEVER output raw \\ce without $ or $$ delimiters.
+- Avoid writing raw math or chemical symbols as plain text without $ or $$ wrappers.`;
 
     const userMessageContent: any[] = [];
     let contextStr = `Class Topic: ${topicNotes || 'Not Specified'}\n\n`;
@@ -1032,69 +1010,43 @@ ANSWERING:
       }
 
       for (const attachedImage of screenshotUrls) {
-        let mimeType = '';
-        let base64Data = '';
-
         if (attachedImage.startsWith('data:')) {
-          const matches = attachedImage.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
-          if (matches && matches.length === 3) {
-            mimeType = matches[1];
-            base64Data = matches[2];
+          const commaIndex = attachedImage.indexOf(',');
+          if (commaIndex !== -1) {
+            const meta = attachedImage.substring(0, commaIndex);
+            const mimeMatch = meta.match(/data:(.*?);/);
+            const base64Data = attachedImage.substring(commaIndex + 1);
+            if (mimeMatch && base64Data) {
+              userMessageContent.push({
+                inlineData: {
+                  mimeType: mimeMatch[1],
+                  data: base64Data
+                }
+              });
+            }
           }
         } else if (attachedImage.startsWith('http://') || attachedImage.startsWith('https://')) {
-          try {
-            const imgRes = await fetch(attachedImage);
-            if (imgRes.ok) {
-              mimeType = imgRes.headers.get('content-type') || 'image/jpeg';
-              const arrayBuffer = await imgRes.arrayBuffer();
-              base64Data = Buffer.from(arrayBuffer).toString('base64');
-            } else {
-              console.error('[Doubt] Failed to fetch screenshot from URL:', attachedImage, imgRes.statusText);
-            }
-          } catch (fetchErr) {
-            console.error('[Doubt] Error fetching screenshot from URL:', fetchErr);
-          }
-        }
-
-        if (mimeType && base64Data) {
+          const ext = attachedImage.split('.').pop()?.toLowerCase();
+          const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
           userMessageContent.push({
-            inlineData: {
-              mimeType: mimeType,
-              data: base64Data
+            fileData: {
+              fileUri: attachedImage,
+              mimeType: mimeType
             }
           });
         }
       }
     }
 
-    // 3. Call Gemini API with Streaming (SSE) - Using gemini-2.5-flash-lite as primary for speed and quota stability
-    let geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:streamGenerateContent?key=${geminiKey}`;
-    let geminiRes = await fetch(geminiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    let geminiRes;
+    try {
+      geminiRes = await requestAI({
         contents: [{ role: 'user', parts: userMessageContent }],
-        systemInstruction: { parts: [{ text: systemPrompt }] }
-      })
-    });
-
-    // Fallback: Try gemini-flash-latest if 2.5-flash-lite fails (e.g. rate limits or project quotas)
-    if (!geminiRes.ok) {
-      console.warn(`[Doubt] Gemini 2.5 Flash Lite failed (status: ${geminiRes.status}). Trying fallback to Gemini Flash Latest...`);
-      geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:streamGenerateContent?key=${geminiKey}`;
-      geminiRes = await fetch(geminiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: userMessageContent }],
-          systemInstruction: { parts: [{ text: systemPrompt }] }
-        })
-      });
-    }
-
-    if (!geminiRes.ok) {
-      const errText = await geminiRes.text();
-      console.error('[Doubt] Gemini streaming failed:', geminiRes.status, errText);
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        enableThinking: enableThinking !== undefined ? enableThinking : true
+      }, { stream: true });
+    } catch (err: any) {
+      console.error('[Doubt] AI call failed:', err.message);
       res.status(500).json({ error: 'Failed to stream doubt solver' });
       return;
     }
@@ -1109,45 +1061,35 @@ ANSWERING:
     let answerText = '';
     let tempBuffer = '';
 
-    // Stream and parse incoming chunked JSON objects using brace-matching
+    // Stream and parse incoming chunked SSE payload
     for await (const chunk of geminiRes.body as any) {
       tempBuffer += decoder.decode(chunk, { stream: true });
       
-      let braceCount = 0;
-      let startIndex = -1;
-      let inString = false;
+      const lines = tempBuffer.split('\n');
+      // Save last potentially incomplete line back to buffer
+      tempBuffer = lines.pop() || '';
 
-      for (let i = 0; i < tempBuffer.length; i++) {
-        const char = tempBuffer[i];
-        
-        // Track quotes to ignore braces inside string literals
-        if (char === '"' && (i === 0 || tempBuffer[i - 1] !== '\\')) {
-          inString = !inString;
-        }
-
-        if (!inString) {
-          if (char === '{') {
-            if (braceCount === 0) startIndex = i;
-            braceCount++;
-          } else if (char === '}') {
-            braceCount--;
-            if (braceCount === 0 && startIndex !== -1) {
-              const objStr = tempBuffer.substring(startIndex, i + 1);
-              try {
-                const parsed = JSON.parse(objStr);
-                const textVal = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (textVal) {
-                  answerText += textVal;
-                  res.write(`data: ${JSON.stringify({ text: textVal })}\n\n`);
-                }
-              } catch (e) {
-                // Ignore incomplete objects
-              }
-              // Truncate buffer and reset loop state
-              tempBuffer = tempBuffer.substring(i + 1);
-              i = -1;
-              startIndex = -1;
+      for (const line of lines) {
+        const cleanLine = line.trim();
+        if (cleanLine.startsWith('data: ')) {
+          const dataStr = cleanLine.substring(6).trim();
+          if (dataStr === '[DONE]') {
+            continue;
+          }
+          try {
+            const parsed = JSON.parse(dataStr);
+            const reasoning = parsed.choices?.[0]?.delta?.reasoning_content;
+            const content = parsed.choices?.[0]?.delta?.content;
+            
+            if (reasoning) {
+              res.write(`data: ${JSON.stringify({ thinking: reasoning })}\n\n`);
             }
+            if (content) {
+              answerText += content;
+              res.write(`data: ${JSON.stringify({ text: content })}\n\n`);
+            }
+          } catch (e) {
+            // Ignore JSON parsing errors for partial stream chunks
           }
         }
       }
@@ -1218,36 +1160,25 @@ Requirements:
 3. Do not rewrite the existing summary, only return the new entry that should be appended to it.`;
 
     // Call Gemini API - Using gemini-2.5-flash-lite directly for speed and quota stability
-    let geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiKey}`;
-    let geminiRes = await fetch(geminiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    let geminiRes;
+    try {
+      geminiRes = await requestAI({
         contents: [{ parts: [{ text: prompt }] }]
-      })
-    });
-
-    // Fallback to gemini-flash-latest if 2.5-flash-lite fails (e.g. rate limits or quotas)
-    if (!geminiRes.ok) {
-      console.warn(`[Summary Update] Gemini 2.5 Flash Lite failed (status: ${geminiRes.status}). Trying fallback to Gemini Flash Latest...`);
-      geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${geminiKey}`;
-      geminiRes = await fetch(geminiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }]
-        })
       });
+    } catch (err: any) {
+      console.error('[Summary Update] AI call failed:', err.message);
+      res.status(500).send('Failed to generate summary');
+      return;
     }
 
     if (!geminiRes.ok) {
-      console.error('[Summary Update] Gemini error:', geminiRes.status, await geminiRes.text());
+      console.error('[Summary Update] AI error:', geminiRes.status, await geminiRes.text());
       res.status(500).send('Failed to generate summary');
       return;
     }
 
     const data = await geminiRes.json() as any;
-    const newEntry = (data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
+    const newEntry = (data.choices?.[0]?.message?.content || '').trim();
 
     const updatedSummary = rollingSummary 
       ? `${rollingSummary}\n${newEntry}`
@@ -1360,13 +1291,28 @@ app.get('/api/doubts/:sessionId', requireClassroomAuth, async (req, res) => {
   const { sessionId } = req.params;
   const currentUserId = req.user!.userId;
   try {
-    const doubtsRes = await db.query(`
-      SELECT d.id, d."sessionId", d."studentId", d."doubtText", d.answer, d.screenshot, d.timestamp, u.name as "studentName" 
-      FROM "Doubt" d
-      JOIN "User" u ON d."studentId" = u.id
-      WHERE d."sessionId" = $1 AND d."studentId" = $2
-      ORDER BY d.timestamp ASC
-    `, [sessionId, currentUserId]);
+    const isTeacher = req.user!.role === 'teacher' || req.user!.role === 'ADMIN';
+    let doubtsRes;
+
+    if (isTeacher) {
+      // Teachers see all doubts in the session
+      doubtsRes = await db.query(`
+        SELECT d.id, d."sessionId", d."studentId", d."doubtText", d.answer, d.screenshot, d.timestamp, u.name as "studentName" 
+        FROM "Doubt" d
+        JOIN "User" u ON d."studentId" = u.id
+        WHERE d."sessionId" = $1
+        ORDER BY d.timestamp ASC
+      `, [sessionId]);
+    } else {
+      // Students only see their own doubts in the session
+      doubtsRes = await db.query(`
+        SELECT d.id, d."sessionId", d."studentId", d."doubtText", d.answer, d.screenshot, d.timestamp, u.name as "studentName" 
+        FROM "Doubt" d
+        JOIN "User" u ON d."studentId" = u.id
+        WHERE d."sessionId" = $1 AND d."studentId" = $2
+        ORDER BY d.timestamp ASC
+      `, [sessionId, currentUserId]);
+    }
     
     const doubts = doubtsRes.rows.map(d => ({
       id: d.id,
