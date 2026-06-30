@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { IconSend, IconPhoto, IconCamera, IconTrash, IconLoader2, IconRefresh, IconAlertCircle, IconMaximize, IconExternalLink } from '@tabler/icons-react';
+import { IconSend, IconPhoto, IconCamera, IconTrash, IconLoader2, IconRefresh, IconAlertCircle, IconMaximize, IconChevronDown, IconChevronRight } from '@tabler/icons-react';
+import MarkdownRenderer from './MarkdownRenderer';
 
 interface Doubt {
 	id: number;
@@ -26,47 +27,21 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 	const [streamedAnswer, setStreamedAnswer] = useState('');
 	const [doubts, setDoubts] = useState<Doubt[]>([]);
 	const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+	const [streamedThinking, setStreamedThinking] = useState('');
+	const [enableThinking, setEnableThinking] = useState(true);
 	const [selectedImage, setSelectedImage] = useState<string | null>(null); // For fullscreen image modal
 	const [activeDoubt, setActiveDoubt] = useState<{ text: string; screenshots: string[] } | null>(null);
+	
+	// New States for Claude-style Persistent Thinking & Stage Placeholders
+	const [streamingPhase, setStreamingPhase] = useState<'idle' | 'context' | 'thinking' | 'answering'>('idle');
+	const [localThinking, setLocalThinking] = useState<Record<number, string>>({});
+	const [expandedThinking, setExpandedThinking] = useState<Record<number, boolean>>({});
+	const [activeThinkingExpanded, setActiveThinkingExpanded] = useState(true);
+	
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const doubtsEndRef = useRef<HTMLDivElement>(null);
-
-	// Helper to parse basic markdown bold (**text**) and bullet lists
-	const renderFormattedAnswer = (text: string) => {
-		if (!text) return null;
-		
-		const lines = text.split('\n');
-		return lines.map((line, lineIdx) => {
-			// Check if it's a bullet point (starts with '-' or '*' or '•')
-			const bulletMatch = line.match(/^[-*•]\s+(.*)$/);
-			
-			// Function to split and parse **bold** text
-			const parseBold = (str: string) => {
-				const parts = str.split(/\*\*([^*]+)\*\*/g);
-				return parts.map((part, idx) => {
-					if (idx % 2 === 1) {
-						return <strong key={idx} className="font-bold text-white">{part}</strong>;
-					}
-					return part;
-				});
-			};
-
-			if (bulletMatch) {
-				return (
-					<div key={lineIdx} className="flex items-start gap-1.5 ml-2 my-1">
-						<span className="text-indigo-400 mt-1 select-none">•</span>
-						<span className="flex-1">{parseBold(bulletMatch[1])}</span>
-					</div>
-				);
-			}
-
-			return (
-				<div key={lineIdx} className={line.trim() === '' ? 'h-2' : 'my-0.5'}>
-					{parseBold(line)}
-				</div>
-			);
-		});
-	};
+	const finalThinkingRef = useRef('');
+	const hasCollapsedActiveThinkingRef = useRef(false);
 
 	// Helper to convert base64 dataURL to Blob for R2 uploads
 	const dataURLtoBlob = (dataurl: string) => {
@@ -163,13 +138,12 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 				return;
 			}
 
-			// Capture the whiteboard frames/shapes directly using Tldraw's native toImage helper
 			const { blob } = await editor.toImage(shapeIds, {
 				format: 'jpeg',
 				background: true,
 				quality: 0.7,
 				scale: 1,
-				bounds: editor.getViewportPageBounds(), // Crop exactly to the student's active viewport page bounds
+				bounds: editor.getViewportPageBounds(),
 			});
 
 			const reader = new FileReader();
@@ -200,7 +174,12 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 		setDoubtText('');
 		setAttachedImages([]);
 		setStreamedAnswer('');
+		setStreamedThinking('');
 		setIsStreaming(true);
+		setStreamingPhase('context');
+		setActiveThinkingExpanded(true);
+		hasCollapsedActiveThinkingRef.current = false;
+		finalThinkingRef.current = '';
 
 		try {
 			const accessToken = sessionStorage.getItem('classroom_access_token');
@@ -235,7 +214,6 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 					console.log('[DoubtSolver] Screenshots uploaded to R2 successfully:', finalScreenshot);
 				} catch (uploadErr) {
 					console.error('[DoubtSolver] Failed to upload screenshots to R2, falling back to base64 array:', uploadErr);
-					// Fallback to sending base64 raw string array
 					finalScreenshot = JSON.stringify(imagesToSend);
 				}
 			}
@@ -250,6 +228,7 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 					sessionId,
 					doubtText: textToSend,
 					screenshot: finalScreenshot,
+					enableThinking,
 				}),
 			});
 
@@ -270,7 +249,6 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 					if (value) {
 						buffer += decoder.decode(value, { stream: true });
 						const lines = buffer.split('\n');
-						// Keep last unfinished line in buffer
 						buffer = lines.pop() || '';
 
 						for (const line of lines) {
@@ -283,8 +261,21 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 								}
 								try {
 									const parsed = JSON.parse(dataStr);
+									if (parsed.thinking) {
+										setStreamedThinking((prev) => {
+											const updated = prev + parsed.thinking;
+											finalThinkingRef.current = updated;
+											return updated;
+										});
+										setStreamingPhase(phase => phase !== 'thinking' ? 'thinking' : phase);
+									}
 									if (parsed.text) {
+										if (!hasCollapsedActiveThinkingRef.current) {
+											hasCollapsedActiveThinkingRef.current = true;
+											setActiveThinkingExpanded(false);
+										}
 										setStreamedAnswer((prev) => prev + parsed.text);
+										setStreamingPhase(phase => phase !== 'answering' ? 'answering' : phase);
 									}
 								} catch (e) {
 									// Ignore partial JSON parsing errors
@@ -298,10 +289,28 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 			console.error('Error sending doubt:', err);
 			setStreamedAnswer('Sorry, something went wrong while communicating with the doubt solver AI. Please try again.');
 		} finally {
-			await fetchDoubtsHistory(); // Wait for the new history to be loaded and set in state first
+			const finalThinking = finalThinkingRef.current;
+			const textForDoubt = textToSend;
+			setStreamingPhase('idle');
+
+			await fetchDoubtsHistory(); // Reload history
+
+			// Map final thinking trace to the newly created doubt ID in history
+			if (finalThinking) {
+				setDoubts(currentDoubts => {
+					const matchedDoubt = currentDoubts[currentDoubts.length - 1];
+					if (matchedDoubt) {
+						setLocalThinking(prev => ({ ...prev, [matchedDoubt.id]: finalThinking }));
+					}
+					return currentDoubts;
+				});
+			}
+
 			setIsStreaming(false);
 			setActiveDoubt(null); // Clear streaming preview
 			setStreamedAnswer(''); // Clear active streamed text state
+			setStreamedThinking(''); // Clear active thinking state
+			finalThinkingRef.current = '';
 		}
 	};
 
@@ -322,7 +331,7 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 			</div>
 
 			{/* Scrollable Container */}
-			<div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
+			<div className="flex-1 overflow-y-auto p-4 space-y-6 scrollbar-thin">
 				{/* Empty State & Instructions */}
 				{!isStreaming && doubts.length === 0 && !isLoadingHistory && (
 					<div className="space-y-4 my-2">
@@ -330,7 +339,7 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 						<div className="flex flex-col items-center justify-center text-center p-6 border border-dashed border-white/5 rounded-2xl bg-white/[0.01]">
 							<IconAlertCircle className="w-8 h-8 text-indigo-400/50 mb-3 animate-pulse" />
 							<h5 className="font-semibold text-sm text-white/80">Your Private AI Study Assistant</h5>
-							<p className="text-xs text-[#C2CCDE]/50 max-w-xs mt-1 leading-relaxed">
+							<p className="text-xs text-[#C2CCDE]/55 max-w-xs mt-1 leading-relaxed">
 								Ask questions about class concepts, slides, or topics. Your conversation is 100% private.
 							</p>
 						</div>
@@ -363,89 +372,157 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 						<IconLoader2 className="w-6 h-6 text-indigo-400 animate-spin" />
 					</div>
 				) : (
-					<div className="space-y-4">
-						{/* Render Completed Doubts History */}
-						{doubts.map((d) => (
-							<div key={d.id} className="p-4 rounded-xl bg-white/[0.02] border border-white/5 space-y-3 shadow-sm hover:border-white/10 transition-colors">
-								<div className="flex justify-between items-center text-[10px]">
-									<span className="font-bold text-indigo-400">
-										You asked
-									</span>
-									<span className="text-foreground/30">
-										{new Date(d.timestamp + ' UTC').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-									</span>
-								</div>
-
-								<div className="text-sm font-medium text-white/90 leading-snug">
-									{d.doubt_text}
-								</div>
-
-								{d.screenshot && (() => {
-									let imgs: string[] = [];
-									try {
-										if (d.screenshot.startsWith('[')) {
-											imgs = JSON.parse(d.screenshot);
-										} else {
-											imgs = [d.screenshot];
-										}
-									} catch (e) {
+					<div className="space-y-6">
+						{/* Render Completed Doubts History in Claude-style layout */}
+						{doubts.map((d) => {
+							const hasThinking = !!localThinking[d.id];
+							const isThinkingOpen = !!expandedThinking[d.id];
+							
+							// Parse screenshots if present
+							let imgs: string[] = [];
+							if (d.screenshot) {
+								try {
+									if (d.screenshot.startsWith('[')) {
+										imgs = JSON.parse(d.screenshot);
+									} else {
 										imgs = [d.screenshot];
 									}
-									return imgs.length > 0 && (
-										<div className="flex flex-wrap gap-2">
-											{imgs.map((imgUrl, idx) => (
+								} catch (e) {
+									imgs = [d.screenshot];
+								}
+							}
+
+							return (
+								<div key={d.id} className="space-y-4 pb-4 border-b border-white/5 last:border-0">
+									{/* User Question (Right-aligned bubble + Floating image above) */}
+									<div className="flex flex-col items-end space-y-2 max-w-[85%] ml-auto">
+										{imgs.length > 0 && (
+											<div className="flex flex-wrap gap-2 justify-end">
+												{imgs.map((imgUrl, idx) => (
+													<div
+														key={idx}
+														className="relative group w-32 aspect-video rounded-lg overflow-hidden border border-white/10 cursor-pointer shadow-md"
+														onClick={() => setSelectedImage(imgUrl)}
+													>
+														<img src={imgUrl} alt={`Attachment ${idx + 1}`} className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
+														<div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+															<IconMaximize className="w-4 h-4 text-white" />
+														</div>
+													</div>
+												))}
+											</div>
+										)}
+										<div className="px-4 py-2.5 bg-white/[0.06] border border-white/5 rounded-2xl rounded-tr-none text-white text-xs leading-relaxed whitespace-pre-wrap">
+											{d.doubt_text}
+										</div>
+									</div>
+
+									{/* AI Answer (Left-aligned, directly on bg, no card) */}
+									<div className="space-y-2 pl-2">
+										<div className="flex items-center justify-between text-[9px] text-[#C2CCDE]/35">
+											<span className="font-bold text-indigo-400/80">AI DOUBT SOLVER</span>
+											<span>
+												{new Date(d.timestamp + ' UTC').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+											</span>
+										</div>
+
+										{/* Collapsible thought process (rendered with markdown/LaTeX) */}
+										{hasThinking && (
+											<div className="my-2 p-2 bg-slate-950/20 border border-white/5 rounded-lg">
+												<button
+													onClick={() => setExpandedThinking(prev => ({ ...prev, [d.id]: !prev[d.id] }))}
+													className="flex items-center gap-1 text-[9px] font-bold text-indigo-400/70 hover:text-indigo-400 transition-colors select-none"
+												>
+													{isThinkingOpen ? (
+														<IconChevronDown className="w-3.5 h-3.5" />
+													) : (
+														<IconChevronRight className="w-3.5 h-3.5" />
+													)}
+													<span>THOUGHT PROCESS</span>
+												</button>
+												{isThinkingOpen && (
+													<div className="mt-2 pl-3 border-l border-white/10 text-[10px] text-slate-400 font-mono">
+														<MarkdownRenderer content={localThinking[d.id]} />
+													</div>
+												)}
+											</div>
+										)}
+
+										{/* Final solved answer */}
+										<div className="text-slate-100 text-xs leading-relaxed">
+											<MarkdownRenderer content={d.answer} />
+										</div>
+									</div>
+								</div>
+							);
+						})}
+
+						{/* Render Active Streaming Doubt */}
+						{isStreaming && activeDoubt && (
+							<div className="space-y-4 pt-2 pb-6 border-b border-white/5">
+								{/* User Question (Right-aligned bubble + Floating images above) */}
+								<div className="flex flex-col items-end space-y-2 max-w-[85%] ml-auto">
+									{activeDoubt.screenshots && activeDoubt.screenshots.length > 0 && (
+										<div className="flex flex-wrap gap-2 justify-end">
+											{activeDoubt.screenshots.map((imgUrl, idx) => (
 												<div
 													key={idx}
 													className="relative group w-32 aspect-video rounded-lg overflow-hidden border border-white/10 cursor-pointer shadow-md"
 													onClick={() => setSelectedImage(imgUrl)}
 												>
-													<img src={imgUrl} alt={`Screenshot ${idx + 1}`} className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105" />
-													<div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+													<img src={imgUrl} alt={`Screenshot ${idx + 1}`} className="w-full h-full object-cover" />
+													<div className="absolute inset-0 bg-black/40 opacity-0 hover:opacity-100 flex items-center justify-center transition-opacity">
 														<IconMaximize className="w-4 h-4 text-white" />
 													</div>
 												</div>
 											))}
 										</div>
-									);
-								})()}
-
-								<div className="p-3.5 rounded-lg bg-surface-light/5 border-l-2 border-indigo-500/50 text-xs text-[#C2CCDE] leading-relaxed">
-									{renderFormattedAnswer(d.answer)}
-								</div>
-							</div>
-						))}
-
-						{/* Render Active Streaming Doubt */}
-						{isStreaming && activeDoubt && (
-							<div className="p-4 rounded-xl bg-indigo-500/5 border border-indigo-500/10 space-y-3 animate-pulse">
-								<div className="flex justify-between items-center text-[10px]">
-									<span className="font-bold text-indigo-400">You asked (Generating...)</span>
-									<IconLoader2 className="w-3.5 h-3.5 text-indigo-400 animate-spin" />
-								</div>
-								
-								<div className="text-sm font-medium text-white/90 leading-snug">
-									{activeDoubt.text}
-								</div>
-
-								{activeDoubt.screenshots && activeDoubt.screenshots.length > 0 && (
-									<div className="flex flex-wrap gap-2">
-										{activeDoubt.screenshots.map((imgUrl, idx) => (
-											<div
-												key={idx}
-												className="relative group w-32 aspect-video rounded-lg overflow-hidden border border-white/10 cursor-pointer shadow-md"
-												onClick={() => setSelectedImage(imgUrl)}
-											>
-												<img src={imgUrl} alt={`Screenshot ${idx + 1}`} className="w-full h-full object-cover" />
-												<div className="absolute inset-0 bg-black/40 opacity-0 hover:opacity-100 flex items-center justify-center transition-opacity">
-													<IconMaximize className="w-4 h-4 text-white" />
-												</div>
-											</div>
-										))}
+									)}
+									<div className="px-4 py-2.5 bg-white/[0.06] border border-white/5 rounded-2xl rounded-tr-none text-white text-xs leading-relaxed whitespace-pre-wrap">
+										{activeDoubt.text}
 									</div>
-								)}
+								</div>
 
-								<div className="p-3.5 rounded-lg bg-surface-light/10 border-l-2 border-indigo-400 text-xs text-[#C2CCDE] leading-relaxed min-h-[50px]">
-									{streamedAnswer ? renderFormattedAnswer(streamedAnswer) : 'Formulating prompt and waiting for AI response...'}
+								{/* AI Response (Left-aligned on bg) */}
+								<div className="space-y-3 pl-2">
+									{/* Placeholder row (always at top) */}
+									{(streamingPhase === 'context' || streamingPhase === 'thinking') && (
+										<div className="flex items-center gap-2 py-1 text-xs text-indigo-400 font-medium italic animate-pulse">
+											<IconLoader2 className="w-3.5 h-3.5 animate-spin" />
+											<span>
+												{streamingPhase === 'context' ? 'Reading classroom context...' : 'Thinking deeply...'}
+											</span>
+										</div>
+									)}
+
+									{/* Thought Process (active stream) */}
+									{streamedThinking && (
+										<div className="my-2 p-2 bg-slate-950/20 border border-white/5 rounded-lg">
+											<button
+												onClick={() => setActiveThinkingExpanded(!activeThinkingExpanded)}
+												className="flex items-center gap-1 text-[9px] font-bold text-indigo-400/70 hover:text-indigo-400 transition-colors select-none"
+											>
+												{activeThinkingExpanded ? (
+													<IconChevronDown className="w-3.5 h-3.5" />
+												) : (
+													<IconChevronRight className="w-3.5 h-3.5" />
+												)}
+												<span>THOUGHT PROCESS</span>
+											</button>
+											{activeThinkingExpanded && (
+												<div className="mt-2 pl-3 border-l border-white/10 text-[10px] text-slate-400 font-mono">
+													<MarkdownRenderer content={streamedThinking} />
+												</div>
+											)}
+										</div>
+									)}
+
+									{/* Streaming Solution */}
+									{streamedAnswer && (
+										<div className="text-slate-100 text-xs leading-relaxed">
+											<MarkdownRenderer content={streamedAnswer} />
+										</div>
+									)}
 								</div>
 							</div>
 						)}
@@ -455,109 +532,121 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 				)}
 			</div>
 
-			{/* Bottom Input Area (Available for both Student and Teacher) */}
-			{true && (
-				<form onSubmit={handleSubmitDoubt} className="p-3 border-t border-white/5 bg-surface/20 space-y-3">
-					{/* AI Context Pill */}
-					<div className="flex items-center">
-						<span className="inline-flex items-center gap-1 px-2.5 py-1 bg-surface-hi border border-border rounded-full text-[10px] font-bold text-text-muted font-sans select-none">
-							📚 Context: last {Math.max(1, Math.floor((Date.now() - (() => {
-								if (typeof window !== 'undefined') {
-									const val = sessionStorage.getItem('classroom_session_started_at');
-									if (val) return parseInt(val, 10);
-								}
-								return Date.now();
-							})()) / 60000))} mins
-						</span>
-					</div>
+			{/* Bottom Input Area */}
+			<form onSubmit={handleSubmitDoubt} className="p-3 border-t border-white/5 bg-surface/20 space-y-3">
+				{/* AI Context Pill & Thinking Mode Toggle */}
+				<div className="flex items-center justify-between">
+					<span className="inline-flex items-center gap-1 px-2.5 py-1 bg-surface-hi border border-border rounded-full text-[10px] font-bold text-text-muted font-sans select-none">
+						📚 Context: last {Math.max(1, Math.floor((Date.now() - (() => {
+							if (typeof window !== 'undefined') {
+								const val = sessionStorage.getItem('classroom_session_started_at');
+								if (val) return parseInt(val, 10);
+							}
+							return Date.now();
+						})()) / 60000))} mins
+					</span>
 
-					{/* Screenshot Previews */}
-					{attachedImages.length > 0 && (
-						<div className="flex flex-wrap gap-3 pb-1 pt-1">
-							{attachedImages.map((img, idx) => (
-								<div key={idx} className="relative pt-1.5 pr-1.5 shrink-0">
-									<div
-										onClick={() => setSelectedImage(img)}
-										className="relative w-28 h-16 rounded-xl border border-white/10 overflow-hidden shadow-lg cursor-pointer group transition-colors"
-										title="Click to view full screen"
-									>
-										<img src={img} alt="Doubt attachment preview" className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform" />
-										<div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-											<IconMaximize className="w-4 h-4 text-white" />
-										</div>
-									</div>
-									<button
-										type="button"
-										onClick={(e) => {
-											e.stopPropagation();
-											setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
-										}}
-										className="absolute top-0 right-0 bg-red-500 hover:bg-red-650 text-white rounded-full p-0.5 shadow-sm transition-colors cursor-pointer z-10 animate-in fade-in duration-100"
-										title="Remove image"
-									>
-										<IconTrash className="w-3.5 h-3.5" />
-									</button>
-								</div>
-							))}
+					{/* Toggle for Thinking Mode */}
+					<label className="relative inline-flex items-center cursor-pointer select-none text-[10px] font-semibold text-[#C2CCDE]/70 hover:text-white transition-colors gap-1.5">
+						<span>Thinking Mode</span>
+						<div className="relative">
+							<input 
+								type="checkbox" 
+								checked={enableThinking} 
+								onChange={(e) => setEnableThinking(e.target.checked)} 
+								className="sr-only peer" 
+							/>
+							<div className="w-7 h-4 bg-white/10 rounded-full peer peer-checked:bg-indigo-500 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-3"></div>
 						</div>
-					)}
+					</label>
+				</div>
 
-					<div className="flex gap-2">
-						{/* Attach File Button */}
-						<button
-							type="button"
-							onClick={() => fileInputRef.current?.click()}
-							className="p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 text-[#C2CCDE] hover:text-white transition-colors cursor-pointer"
-							title="Attach screenshot"
-						>
-							<IconPhoto className="w-4 h-4" />
-						</button>
-						<input
-							type="file"
-							ref={fileInputRef}
-							accept="image/*"
-							onChange={handleImageUpload}
-							multiple
-							className="hidden"
-						/>
-
-						{/* Capture Whiteboard Button */}
-						<button
-							type="button"
-							onClick={handleCaptureWhiteboard}
-							disabled={isCapturing}
-							className="p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 text-[#C2CCDE] hover:text-white transition-colors disabled:opacity-50 cursor-pointer flex items-center justify-center"
-							title="Capture Whiteboard drawing"
-						>
-							{isCapturing ? (
-								<IconLoader2 className="w-4 h-4 animate-spin text-indigo-400" />
-							) : (
-								<IconCamera className="w-4 h-4" />
-							)}
-						</button>
-
-						{/* Text input */}
-						<input
-							type="text"
-							value={doubtText}
-							onChange={(e) => setDoubtText(e.target.value)}
-							onPaste={handlePaste}
-							placeholder="Type doubt, paste image, or click attachments..."
-							disabled={isStreaming}
-							className="flex-1 px-4 py-2.5 rounded-xl bg-white/[0.04] border border-white/5 focus:border-indigo-500/50 outline-none text-sm text-white placeholder-[#C2CCDE]/30 transition-all font-sans"
-						/>
-
-						{/* Submit Button */}
-						<button
-							type="submit"
-							disabled={(!doubtText.trim() && attachedImages.length === 0) || isStreaming}
-							className="p-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50 disabled:bg-[#111827] cursor-pointer flex items-center justify-center"
-						>
-							<IconSend className="w-4 h-4" />
-						</button>
+				{/* Screenshot Previews */}
+				{attachedImages.length > 0 && (
+					<div className="flex flex-wrap gap-3 pb-1 pt-1">
+						{attachedImages.map((img, idx) => (
+							<div key={idx} className="relative pt-1.5 pr-1.5 shrink-0">
+								<div
+									onClick={() => setSelectedImage(img)}
+									className="relative w-28 h-16 rounded-xl border border-white/10 overflow-hidden shadow-lg cursor-pointer group transition-colors"
+									title="Click to view full screen"
+								>
+									<img src={img} alt="Doubt attachment preview" className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform" />
+									<div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+										<IconMaximize className="w-4 h-4 text-white" />
+									</div>
+								</div>
+								<button
+									type="button"
+									onClick={(e) => {
+										e.stopPropagation();
+										setAttachedImages((prev) => prev.filter((_, i) => i !== idx));
+									}}
+									className="absolute top-0 right-0 bg-red-500 hover:bg-red-650 text-white rounded-full p-0.5 shadow-sm transition-colors cursor-pointer z-10 animate-in fade-in duration-100"
+									title="Remove image"
+								>
+									<IconTrash className="w-3.5 h-3.5" />
+								</button>
+							</div>
+						))}
 					</div>
-				</form>
-			)}
+				)}
+
+				<div className="flex gap-2">
+					{/* Attach File Button */}
+					<button
+						type="button"
+						onClick={() => fileInputRef.current?.click()}
+						className="p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 text-[#C2CCDE] hover:text-white transition-colors cursor-pointer"
+						title="Attach screenshot"
+					>
+						<IconPhoto className="w-4 h-4" />
+					</button>
+					<input
+						type="file"
+						ref={fileInputRef}
+						accept="image/*"
+						onChange={handleImageUpload}
+						multiple
+						className="hidden"
+					/>
+
+					{/* Capture Whiteboard Button */}
+					<button
+						type="button"
+						onClick={handleCaptureWhiteboard}
+						disabled={isCapturing}
+						className="p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 text-[#C2CCDE] hover:text-white transition-colors disabled:opacity-50 cursor-pointer flex items-center justify-center"
+						title="Capture Whiteboard drawing"
+					>
+						{isCapturing ? (
+							<IconLoader2 className="w-4 h-4 animate-spin text-indigo-400" />
+						) : (
+							<IconCamera className="w-4 h-4" />
+						)}
+					</button>
+
+					{/* Text input */}
+					<input
+						type="text"
+						value={doubtText}
+						onChange={(e) => setDoubtText(e.target.value)}
+						onPaste={handlePaste}
+						placeholder="Type doubt, paste image, or click attachments..."
+						disabled={isStreaming}
+						className="flex-1 px-4 py-2.5 rounded-xl bg-white/[0.04] border border-white/5 focus:border-indigo-500/50 outline-none text-sm text-white placeholder-[#C2CCDE]/30 transition-all font-sans"
+					/>
+
+					{/* Submit Button */}
+					<button
+						type="submit"
+						disabled={(!doubtText.trim() && attachedImages.length === 0) || isStreaming}
+						className="p-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50 disabled:bg-[#111827] cursor-pointer flex items-center justify-center"
+					>
+						<IconSend className="w-4 h-4" />
+					</button>
+				</div>
+			</form>
 
 			{/* Fullscreen Image Lightbox Modal */}
 			{selectedImage && (
