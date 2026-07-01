@@ -100,6 +100,11 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 
 		Array.from(files).forEach((file) => {
 			if (file.type.startsWith('image/')) {
+				// Check size limit: 5MB
+				if (file.size > 5 * 1024 * 1024) {
+					alert(`Image "${file.name}" must be less than 5MB`);
+					return;
+				}
 				const reader = new FileReader();
 				reader.onloadend = () => {
 					setAttachedImages((prev) => [...prev, reader.result as string]);
@@ -114,6 +119,11 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 		const file = e.clipboardData.files?.[0];
 		if (file && file.type.startsWith('image/')) {
 			e.preventDefault();
+			// Check size limit: 5MB
+			if (file.size > 5 * 1024 * 1024) {
+				alert("Image size must be less than 5MB");
+				return;
+			}
 			const reader = new FileReader();
 			reader.onloadend = () => {
 				setAttachedImages((prev) => [...prev, reader.result as string]);
@@ -146,6 +156,13 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 				bounds: editor.getViewportPageBounds(),
 			});
 
+			// Check size limit: 5MB
+			if (blob.size > 5 * 1024 * 1024) {
+				alert("Captured whiteboard image is too large (must be less than 5MB).");
+				setIsCapturing(false);
+				return;
+			}
+
 			const reader = new FileReader();
 			reader.onloadend = () => {
 				setAttachedImages((prev) => [...prev, reader.result as string]);
@@ -162,10 +179,10 @@ export default function DoubtSolverTab({ sessionId, isTeacher, editor }: DoubtSo
 	// 5. Submit student doubt
 	const handleSubmitDoubt = async (e: React.FormEvent) => {
 		e.preventDefault();
-		if (!doubtText.trim() || isStreaming) return;
-
-		const textToSend = doubtText;
+		const textToSend = doubtText.trim();
 		const imagesToSend = [...attachedImages];
+
+		if ((!textToSend && imagesToSend.length === 0) || isStreaming) return;
 
 		// Set active doubt preview for streaming state
 		setActiveDoubt({ text: textToSend, screenshots: imagesToSend });

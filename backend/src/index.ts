@@ -917,12 +917,13 @@ app.post('/api/transcribe', requireClassroomAuth, upload.single('audio'), async 
 
 // POST /api/doubt: Streams Gemini 2.5 Flash response to student doubts and logs to SQLite
 app.post('/api/doubt', requireClassroomAuth, async (req, res) => {
-  const { sessionId, doubtText, screenshot, enableThinking } = req.body;
+  const { sessionId, screenshot, enableThinking } = req.body;
+  const doubtText = req.body.doubtText || '';
   const studentId = req.user!.userId;
   const studentName = req.user!.name;
 
-  if (!sessionId || !doubtText) {
-    res.status(400).json({ error: 'sessionId and doubtText are required' });
+  if (!sessionId || (!doubtText && !screenshot)) {
+    res.status(400).json({ error: 'sessionId and doubtText (or screenshot) are required' });
     return;
   }
 

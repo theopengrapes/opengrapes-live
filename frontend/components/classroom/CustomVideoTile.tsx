@@ -49,15 +49,9 @@ export default function CustomVideoTile({
       ) : (
         <div className="absolute inset-0 bg-[#0d111d] flex items-center justify-center select-none p-4 text-center">
           <span
-<<<<<<< HEAD
-            className={`font-semibold text-white/90 tracking-wide font-sans truncate max-w-[90%] ${
-              isSidebar
-                ? "text-sm md:text-lg"
-=======
             className={`font-bold text-white/90 tracking-wide font-sans truncate max-w-[90%] ${
               isSidebar
                 ? "text-xs md:text-sm"
->>>>>>> live-v2
                 : "text-xl sm:text-2xl md:text-3xl"
             }`}
           >
@@ -67,10 +61,6 @@ export default function CustomVideoTile({
       )}
 
       {/* 2. Glassmorphic bottom label */}
-<<<<<<< HEAD
-=======
-      {/* 2. Glassmorphic bottom label */}
->>>>>>> live-v2
       {(isCameraEnabled ||
         trackRef.participant.isLocal ||
         isMuted ||
@@ -81,11 +71,7 @@ export default function CustomVideoTile({
           }`}
         >
           {isCameraEnabled ? (
-<<<<<<< HEAD
-            <span className="text-sm font-semibold text-white/95 truncate max-w-[120px]">
-=======
             <span className="text-sm font-semibold text-white/95 [text-shadow:0_1px_2px_rgba(0,0,0,0.6),0_0_2px_rgba(0,0,0,0.3)] truncate max-w-[120px]">
->>>>>>> live-v2
               {name}
             </span>
           ) : (
@@ -122,11 +108,7 @@ export default function CustomVideoTile({
         )}
       </div>
 
-<<<<<<< HEAD
       {/* 4. Hover Overlay Actions */}
-=======
-      {/* 3. Hover Overlay Actions */}
->>>>>>> live-v2
       {!hideActions && !isSidebar && onPin && (
         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center gap-3 z-20">
           <button
