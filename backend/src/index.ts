@@ -488,10 +488,15 @@ app.post('/api/end-class', requireLMSOrClassroomAuth, requireRole('teacher'), as
         console.error('Failed to fetch DO data on end class:', err);
       }
 
-      // 2. Fetch all doubts from PostgreSQL
+      // 2. Fetch only teacher/admin doubts from PostgreSQL (student doubts are 100% private and excluded from MoM context)
       let doubtsList: any[] = [];
       try {
-        const doubtsRes = await db.query('SELECT "doubtText", answer FROM "Doubt" WHERE "sessionId" = $1', [sessionId]);
+        const doubtsRes = await db.query(`
+          SELECT d."doubtText", d.answer 
+          FROM "Doubt" d
+          JOIN "User" u ON d."studentId" = u.id
+          WHERE d."sessionId" = $1 AND (u.role = 'teacher' OR u.role = 'ADMIN' OR u.role = 'SUPER_ADMIN')
+        `, [sessionId]);
         doubtsList = doubtsRes.rows;
       } catch (err) {
         console.error('Failed to fetch doubts on end class:', err);
@@ -1302,28 +1307,14 @@ app.get('/api/doubts/:sessionId', requireClassroomAuth, async (req, res) => {
   const { sessionId } = req.params;
   const currentUserId = req.user!.userId;
   try {
-    const isTeacher = req.user!.role === 'teacher' || req.user!.role === 'ADMIN';
-    let doubtsRes;
-
-    if (isTeacher) {
-      // Teachers see all doubts in the session
-      doubtsRes = await db.query(`
-        SELECT d.id, d."sessionId", d."studentId", d."doubtText", d.answer, d.screenshot, d.timestamp, u.name as "studentName" 
-        FROM "Doubt" d
-        JOIN "User" u ON d."studentId" = u.id
-        WHERE d."sessionId" = $1
-        ORDER BY d.timestamp ASC
-      `, [sessionId]);
-    } else {
-      // Students only see their own doubts in the session
-      doubtsRes = await db.query(`
-        SELECT d.id, d."sessionId", d."studentId", d."doubtText", d.answer, d.screenshot, d.timestamp, u.name as "studentName" 
-        FROM "Doubt" d
-        JOIN "User" u ON d."studentId" = u.id
-        WHERE d."sessionId" = $1 AND d."studentId" = $2
-        ORDER BY d.timestamp ASC
-      `, [sessionId, currentUserId]);
-    }
+    // All participants (both students and teachers) only see their own doubts in the session (100% private)
+    const doubtsRes = await db.query(`
+      SELECT d.id, d."sessionId", d."studentId", d."doubtText", d.answer, d.screenshot, d.timestamp, u.name as "studentName" 
+      FROM "Doubt" d
+      JOIN "User" u ON d."studentId" = u.id
+      WHERE d."sessionId" = $1 AND d."studentId" = $2
+      ORDER BY d.timestamp ASC
+    `, [sessionId, currentUserId]);
     
     const doubts = doubtsRes.rows.map(d => ({
       id: d.id,

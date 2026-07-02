@@ -402,10 +402,15 @@ app.post('/api/end-class', auth_1.requireLMSOrClassroomAuth, (0, auth_1.requireR
             catch (err) {
                 console.error('Failed to fetch DO data on end class:', err);
             }
-            // 2. Fetch all doubts from PostgreSQL
+            // 2. Fetch only teacher/admin doubts from PostgreSQL (student doubts are 100% private and excluded from MoM context)
             let doubtsList = [];
             try {
-                const doubtsRes = await db_1.db.query('SELECT "doubtText", answer FROM "Doubt" WHERE "sessionId" = $1', [sessionId]);
+                const doubtsRes = await db_1.db.query(`
+          SELECT d."doubtText", d.answer 
+          FROM "Doubt" d
+          JOIN "User" u ON d."studentId" = u.id
+          WHERE d."sessionId" = $1 AND (u.role = 'teacher' OR u.role = 'ADMIN' OR u.role = 'SUPER_ADMIN')
+        `, [sessionId]);
                 doubtsList = doubtsRes.rows;
             }
             catch (err) {
@@ -836,12 +841,15 @@ TRANSCRIPT HANDLING:
 - Treat the transcript as noisy signal, not ground truth. Infer the intended meaning from context.
 - NEVER quote transcript text verbatim. NEVER say "you mentioned" or "the transcript says". Explain concepts in your own words only.
 
-ANSWERING:
+ANSWERING & MATH/CHEMISTRY FORMATTING:
 - Answer the student's actual doubt, not a literal interpretation of potentially garbled text.
 - If the doubt is ambiguous due to transcription noise, pick the most likely intended interpretation given the class topic and answer that.
 - Use **bold** for key terms, bullet points for steps or lists.
-- Stay under 250 words.
-- If the screenshot is provided, prioritize it over transcript for understanding the doubt.`;
+- Stay under 350 words. If a physics/math derivation is required, lay out steps cleanly but keep text explanations concise.
+- If the screenshot is provided, prioritize it over transcript for understanding the doubt.
+- FORMAT MATH & BOXED ANSWERS: Format all equations, formulas, math symbols, variables, and expressions in standard LaTeX format. Use $...$ for inline math (e.g., $e = mc^2$) and $$...$$ for display/block equations. If you highlight a final numerical or variable answer, ALWAYS wrap it in \\boxed{...} inside $ or $$, e.g., $\\boxed{13}$ or $$\\boxed{x = \\frac{-b \\pm \\sqrt{d}}{2a}}$$. NEVER output raw \\boxed without $ or $$ wrappers.
+- FORMAT CHEMISTRY: Always wrap chemical formulas and equations in LaTeX math mode using \\ce{...} with curly braces inside $ or $$, e.g., $\\ce{2H2 + O2 -> 2H2O}$ or $\\ce{H2SO4}$. NEVER output raw \\ce without braces, and NEVER output raw \\ce without $ or $$ delimiters.
+- Avoid writing raw math or chemical symbols as plain text without $ or $$ wrappers.`;
         const userMessageContent = [];
         let contextStr = `Class Topic: ${topicNotes || 'Not Specified'}\n\n`;
         contextStr += `Class Summary So Far:\n${rollingSummary || 'No summary compiled yet.'}\n\n`;
@@ -879,14 +887,27 @@ ANSWERING:
                     }
                 }
                 else if (attachedImage.startsWith('http://') || attachedImage.startsWith('https://')) {
-                    const ext = attachedImage.split('.').pop()?.toLowerCase();
-                    const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
-                    userMessageContent.push({
-                        fileData: {
-                            fileUri: attachedImage,
-                            mimeType: mimeType
+                    // Fetch the image from Cloudflare R2 and convert it to base64 inlineData
+                    try {
+                        const imgRes = await fetch(attachedImage);
+                        if (imgRes.ok) {
+                            const arrayBuffer = await imgRes.arrayBuffer();
+                            const base64Data = Buffer.from(arrayBuffer).toString('base64');
+                            const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+                            userMessageContent.push({
+                                inlineData: {
+                                    mimeType: contentType,
+                                    data: base64Data
+                                }
+                            });
                         }
-                    });
+                        else {
+                            console.warn(`[Doubt] Failed to fetch image from R2: Status ${imgRes.status}`);
+                        }
+                    }
+                    catch (fetchErr) {
+                        console.error('[Doubt] Error fetching image from R2 URL:', fetchErr.message);
+                    }
                 }
             }
         }
@@ -1120,28 +1141,14 @@ app.get('/api/doubts/:sessionId', auth_1.requireClassroomAuth, async (req, res) 
     const { sessionId } = req.params;
     const currentUserId = req.user.userId;
     try {
-        const isTeacher = req.user.role === 'teacher' || req.user.role === 'ADMIN';
-        let doubtsRes;
-        if (isTeacher) {
-            // Teachers see all doubts in the session
-            doubtsRes = await db_1.db.query(`
-        SELECT d.id, d."sessionId", d."studentId", d."doubtText", d.answer, d.screenshot, d.timestamp, u.name as "studentName" 
-        FROM "Doubt" d
-        JOIN "User" u ON d."studentId" = u.id
-        WHERE d."sessionId" = $1
-        ORDER BY d.timestamp ASC
-      `, [sessionId]);
-        }
-        else {
-            // Students only see their own doubts in the session
-            doubtsRes = await db_1.db.query(`
-        SELECT d.id, d."sessionId", d."studentId", d."doubtText", d.answer, d.screenshot, d.timestamp, u.name as "studentName" 
-        FROM "Doubt" d
-        JOIN "User" u ON d."studentId" = u.id
-        WHERE d."sessionId" = $1 AND d."studentId" = $2
-        ORDER BY d.timestamp ASC
-      `, [sessionId, currentUserId]);
-        }
+        // All participants (both students and teachers) only see their own doubts in the session (100% private)
+        const doubtsRes = await db_1.db.query(`
+      SELECT d.id, d."sessionId", d."studentId", d."doubtText", d.answer, d.screenshot, d.timestamp, u.name as "studentName" 
+      FROM "Doubt" d
+      JOIN "User" u ON d."studentId" = u.id
+      WHERE d."sessionId" = $1 AND d."studentId" = $2
+      ORDER BY d.timestamp ASC
+    `, [sessionId, currentUserId]);
         const doubts = doubtsRes.rows.map(d => ({
             id: d.id,
             session_id: d.sessionId,
