@@ -32,6 +32,7 @@ import { IconPencil as Pen, IconHandStop as Hand } from '@tabler/icons-react';
 import { useStrokeCapture } from '../hooks/useStrokeCapture';
 import { useCursorBroadcast } from '../hooks/useCursorBroadcast';
 import StrokeOverlay from './whiteboard/StrokeOverlay';
+import { getPagesSorted } from './classroom/whiteboard-helpers';
 
 interface WhiteboardProps {
   roomName: string;
@@ -201,6 +202,95 @@ export default function Whiteboard({
   const stylusModeRef = { current: true };
   const activeTouchPointersRef = useRef<Set<number>>(new Set());
   const previousToolRef = useRef<string | null>(null);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const prevWidthRef = useRef<number | null>(null);
+  const maxYRef = useRef<number>(810);
+  const isClampingRef = useRef<boolean>(false);
+
+  const updateMaxY = useCallback(() => {
+    if (!editor) return;
+    const frames = editor.getCurrentPageShapes().filter((s: any) => s.type === 'frame');
+    maxYRef.current = frames.length > 0
+      ? frames.reduce((max: number, f: any) => {
+          const h = (f.props.h as number) ?? 810;
+          return Math.max(max, f.y + h);
+        }, 0)
+      : 810;
+  }, [editor]);
+
+  const clampCamera = useCallback(() => {
+    if (!editor || isClampingRef.current) return;
+
+    // Skip clamping if the user is a participant and currently following the teacher
+    const instanceState = editor.getInstanceState();
+    if (!isTeacher && instanceState?.followingUserId) {
+      return;
+    }
+
+    const camera = editor.getCamera();
+    const screen = editor.getViewportScreenBounds();
+    if (!screen || screen.width === 0 || screen.height === 0) return;
+
+    // 1. Calculate boundaries (100px padding from all 4 directions)
+    const minCanvasX = -100;
+    const maxCanvasX = 1440 + 100;
+
+    const minCanvasY = -100;
+    const maxCanvasY = maxYRef.current + 100;
+
+    // 2. Clamp Zoom
+    // We clamp zoom to be at least minZoomY to allow scrolling through all pages
+    const minZoomY = screen.height / (maxCanvasY - minCanvasY);
+    const MAX_ZOOM = 4;
+    let clampedZ = Math.max(camera.z, minZoomY);
+    clampedZ = Math.min(clampedZ, MAX_ZOOM);
+
+    // 3. Clamp Positions
+    const viewportWidthInCanvas = screen.width / clampedZ;
+    const viewportHeightInCanvas = screen.height / clampedZ;
+
+    // Current viewport top-left in page (canvas) coordinates
+    const viewX = -camera.x;
+    const viewY = -camera.y;
+
+    const minPageX = 315 - 40; // Page xOffset = 315, allow 40px left margin
+    const maxPageX = 315 + 810 + 40; // Page width = 810, allow 40px right margin
+
+    let clampedViewX = viewX;
+    if (viewportWidthInCanvas >= (maxPageX - minPageX)) {
+      // Zoomed out: lock page frame in the center
+      clampedViewX = (1440 - viewportWidthInCanvas) / 2;
+    } else {
+      // Zoomed in: allow panning within page bounds + 40px margin
+      clampedViewX = Math.max(minPageX, Math.min(maxPageX - viewportWidthInCanvas, viewX));
+    }
+
+    let clampedViewY = viewY;
+    if (viewportHeightInCanvas > (maxCanvasY - minCanvasY)) {
+      clampedViewY = minCanvasY + (maxCanvasY - minCanvasY - viewportHeightInCanvas) / 2;
+    } else {
+      clampedViewY = Math.max(minCanvasY, Math.min(maxCanvasY - viewportHeightInCanvas, viewY));
+    }
+
+    const clampedX = -clampedViewX;
+    const clampedY = -clampedViewY;
+
+    // 4. Update if changed
+    const EPSILON = 0.01;
+    if (
+      Math.abs(camera.x - clampedX) > EPSILON ||
+      Math.abs(camera.y - clampedY) > EPSILON ||
+      Math.abs(camera.z - clampedZ) > EPSILON
+    ) {
+      isClampingRef.current = true;
+      try {
+        editor.setCamera({ x: clampedX, y: clampedY, z: clampedZ });
+      } finally {
+        isClampingRef.current = false;
+      }
+    }
+  }, [editor, isTeacher]);
 
   // Keep refs up-to-date
   useEffect(() => {
@@ -438,89 +528,6 @@ export default function Whiteboard({
   useEffect(() => {
     if (!editor) return;
 
-    let isClamping = false;
-    const maxYRef = { current: 810 };
-
-    const updateMaxY = () => {
-      const frames = editor.getCurrentPageShapes().filter((s: any) => s.type === 'frame');
-      maxYRef.current = frames.length > 0
-        ? frames.reduce((max: number, f: any) => {
-            const h = (f.props.h as number) ?? 810;
-            return Math.max(max, f.y + h);
-          }, 0)
-        : 810;
-    };
-
-    const clampCamera = () => {
-      if (isClamping) return;
-
-      // Skip clamping if the user is a participant and currently following the teacher
-      const instanceState = editor.getInstanceState();
-      if (!isTeacher && instanceState?.followingUserId) {
-        return;
-      }
-
-      const camera = editor.getCamera();
-      const screen = editor.getViewportScreenBounds();
-      if (!screen || screen.width === 0 || screen.height === 0) return;
-
-      // 1. Calculate boundaries (100px padding from all 4 directions)
-      const minCanvasX = -100;
-      const maxCanvasX = 1440 + 100;
-
-      const minCanvasY = -100;
-      const maxCanvasY = maxYRef.current + 100;
-
-      // 2. Clamp Zoom
-      const minZoomX = screen.width / (maxCanvasX - minCanvasX);
-      const minZoomY = screen.height / (maxCanvasY - minCanvasY);
-      
-      // We clamp zoom to be at least minZoomX and minZoomY so they can't zoom out past the pages
-      const MAX_ZOOM = 4;
-      let clampedZ = Math.max(camera.z, minZoomX, minZoomY);
-      clampedZ = Math.min(clampedZ, MAX_ZOOM);
-
-      // 3. Clamp Positions
-      const viewportWidthInCanvas = screen.width / clampedZ;
-      const viewportHeightInCanvas = screen.height / clampedZ;
-
-      // Current viewport top-left in page (canvas) coordinates
-      const viewX = -camera.x;
-      const viewY = -camera.y;
-
-      let clampedViewX = viewX;
-      if (viewportWidthInCanvas > (maxCanvasX - minCanvasX)) {
-        clampedViewX = minCanvasX + (maxCanvasX - minCanvasX - viewportWidthInCanvas) / 2;
-      } else {
-        clampedViewX = Math.max(minCanvasX, Math.min(maxCanvasX - viewportWidthInCanvas, viewX));
-      }
-
-      let clampedViewY = viewY;
-      if (viewportHeightInCanvas > (maxCanvasY - minCanvasY)) {
-        clampedViewY = minCanvasY + (maxCanvasY - minCanvasY - viewportHeightInCanvas) / 2;
-      } else {
-        clampedViewY = Math.max(minCanvasY, Math.min(maxCanvasY - viewportHeightInCanvas, viewY));
-      }
-
-      const clampedX = -clampedViewX;
-      const clampedY = -clampedViewY;
-
-      // 4. Update if changed
-      const EPSILON = 0.01;
-      if (
-        Math.abs(camera.x - clampedX) > EPSILON ||
-        Math.abs(camera.y - clampedY) > EPSILON ||
-        Math.abs(camera.z - clampedZ) > EPSILON
-      ) {
-        isClamping = true;
-        try {
-          editor.setCamera({ x: clampedX, y: clampedY, z: clampedZ });
-        } finally {
-          isClamping = false;
-        }
-      }
-    };
-
     // Run clamp on mount or whenever editor changes
     updateMaxY();
     clampCamera();
@@ -536,8 +543,77 @@ export default function Whiteboard({
           Object.values(event.changes.updated).some(([prev, curr]: any) => curr.typeName === 'shape' && curr.type === 'frame');
 
         if (hasAddedFrame || hasRemovedFrame || hasUpdatedFrame) {
+          // Force fixed positions and dimensions for each page frame (centered at x=315, 810x1080 size)
+          const frames = getPagesSorted(editor);
+          const updates: any[] = [];
+          frames.forEach((f: any, index: number) => {
+            const expectedX = 315;
+            const expectedY = index * (1080 + 50); // PAGE_H = 1080, GAP = 50
+            const expectedW = 810;
+            const expectedH = 1080;
+
+            if (
+              f.x !== expectedX ||
+              f.y !== expectedY ||
+              f.props.w !== expectedW ||
+              f.props.h !== expectedH
+            ) {
+              updates.push({
+                id: f.id,
+                type: 'frame',
+                x: expectedX,
+                y: expectedY,
+                props: {
+                  ...f.props,
+                  w: expectedW,
+                  h: expectedH,
+                },
+              });
+            }
+          });
+
+          if (updates.length > 0) {
+            editor.run(() => {
+              updates.forEach((update) => {
+                editor.updateShape(update);
+              });
+            });
+          }
+
           updateMaxY();
           clampCamera();
+          
+          if (hasAddedFrame) {
+            const addedFrame = Object.values(event.changes.added).find((s: any) => s.typeName === 'shape' && s.type === 'frame') as any;
+            if (addedFrame) {
+              // Find its index in the sorted list to get the correct expected Y position
+              const sortedFrames = getPagesSorted(editor);
+              const index = sortedFrames.findIndex((f: any) => f.id === addedFrame.id);
+              if (index !== -1) {
+                const expectedY = index * (1080 + 50);
+                const screen = editor.getViewportScreenBounds();
+                if (screen && screen.width > 0 && screen.height > 0) {
+                  const camera = editor.getCamera();
+                  
+                  // Clamp to minimum zoom limit (minZoomY)
+                  const minZoomY = screen.height / (maxYRef.current + 200);
+                  const minZoom = minZoomY;
+                  
+                  // Calculate current padding on each side in screen pixels
+                  const PAGE_W = addedFrame.props.w as number ?? 810;
+                  const currentPaddingX = (screen.width - PAGE_W * camera.z) / 2;
+                  
+                  // Zoom out by 10% only if padding is less than 40px
+                  const zoomFactor = currentPaddingX < 40 ? 0.9 : 1.0;
+                  const targetZ = Math.max(minZoom, camera.z * zoomFactor);
+                  
+                  const targetX = -(1440 - screen.width / targetZ) / 2;
+                  const targetY = -(expectedY - 100); // 100px padding space on top
+                  editor.setCamera({ x: targetX, y: targetY, z: targetZ });
+                }
+              }
+            }
+          }
         }
       },
       { scope: 'document' }
@@ -555,7 +631,87 @@ export default function Whiteboard({
       cleanupFrames();
       cleanupCamera();
     };
-  }, [editor]);
+  }, [editor, clampCamera, updateMaxY]);
+
+  // Auto-zoom & fit to current page on container resize (e.g. StudentSidebar opens/closes or window resizes)
+  useEffect(() => {
+    if (!editor || !containerRef.current) return;
+
+    const handleResize = (newWidth: number, newHeight: number) => {
+      const oldWidth = prevWidthRef.current;
+      prevWidthRef.current = newWidth;
+
+      updateMaxY();
+
+      // Skip camera adjustment if user is a participant and currently following the teacher
+      const instanceState = editor.getInstanceState();
+      const isFollowing = !isTeacher && instanceState?.followingUserId;
+
+      if (oldWidth !== null && oldWidth > 0 && newWidth > 0 && oldWidth !== newWidth && !isFollowing) {
+        const camera = editor.getCamera();
+        const ratio = newWidth / oldWidth;
+        
+        // Clamp to minimum zoom limit (minZoomY)
+        const minZoomY = newHeight / (maxYRef.current + 200);
+        const minZoom = minZoomY;
+        
+        const MAX_ZOOM = 4;
+        let targetZ = camera.z * ratio;
+        targetZ = Math.max(minZoom, Math.min(targetZ, MAX_ZOOM));
+        
+        const targetX = -(1440 - newWidth / targetZ) / 2;
+        editor.setCamera({ x: targetX, y: camera.y, z: targetZ });
+      } else if (oldWidth === null && !isFollowing) {
+        // Initial fit on load
+        const frames = editor.getCurrentPageShapes().filter((s: any) => s.type === 'frame');
+        if (frames.length > 0) {
+          const camera = editor.getCamera();
+          const viewportCenterY = -camera.y + (newHeight / camera.z) / 2;
+          let closestFrame = frames[0];
+          let minDistance = Infinity;
+          for (const frame of frames) {
+            const frameCenterY = frame.y + (frame.props.h as number ?? 1080) / 2;
+            const distance = Math.abs(frameCenterY - viewportCenterY);
+            if (distance < minDistance) {
+              minDistance = distance;
+              closestFrame = frame;
+            }
+          }
+          if (closestFrame) {
+            const bounds = {
+              x: closestFrame.x,
+              y: closestFrame.y,
+              w: closestFrame.props.w as number ?? 810,
+              h: closestFrame.props.h as number ?? 1080,
+            };
+            editor.zoomToBounds(bounds, { inset: 40, animation: { duration: 0 } });
+          }
+        } else {
+          editor.zoomToFit({ animation: { duration: 0 } });
+        }
+      }
+
+      // Enforce camera clamping constraints and horizontal center lock
+      clampCamera();
+    };
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) {
+        handleResize(entry.contentRect.width, entry.contentRect.height);
+      }
+    });
+
+    resizeObserver.observe(containerRef.current);
+    
+    // Initial run
+    const rect = containerRef.current.getBoundingClientRect();
+    handleResize(rect.width, rect.height);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [editor, isTeacher, clampCamera, updateMaxY]);
 
   // Enforce shape selection permissions:
   // 1. Read-only students cannot select any shapes on the whiteboard.
@@ -673,6 +829,7 @@ export default function Whiteboard({
 
   return (
     <div
+      ref={containerRef}
       className="w-full h-full relative touch-none"
       style={{ touchAction: "none" }}
     >

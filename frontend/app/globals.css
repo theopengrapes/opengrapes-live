@@ -208,16 +208,26 @@ body {
   --tl-color-background: #090d16 !important; /* Contrasting dark mode canvas background */
 }
 
-/* Style the page frames to look like actual white sheets of paper */
-.tl-frame {
-  background-color: #ffffff !important;
+/* Style the page frames to look like soft eye-pleasing cream sheets of paper */
+.tl-frame,
+.tl-frame__background,
+.tl-frame-background,
+.tl-shape[data-shape-type="frame"] rect,
+.tl-shape[data-shape-type="frame"] path {
+  background-color: #FAF9F6 !important; /* Soft off-white cream */
+  fill: #FAF9F6 !important;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08) !important;
   border: 1px solid rgba(0, 0, 0, 0.15) !important;
   border-radius: 4px !important;
 }
 
-.tl-theme__dark .tl-frame {
+.tl-theme__dark .tl-frame,
+.tl-theme__dark .tl-frame__background,
+.tl-theme__dark .tl-frame-background,
+.tl-theme__dark .tl-shape[data-shape-type="frame"] rect,
+.tl-theme__dark .tl-shape[data-shape-type="frame"] path {
   background-color: #1e293b !important; /* Dark mode "paper" sheet background */
+  fill: #1e293b !important;
   border-color: rgba(255, 255, 255, 0.1) !important;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25) !important;
 }

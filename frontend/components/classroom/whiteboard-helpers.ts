@@ -73,15 +73,14 @@ export function getNextPageIndex(editor: Editor) {
 export function addHandDrawnPage(editor: Editor) {
   const pages = getPagesSorted(editor);
   const last = pages[pages.length - 1];
+  const PAGE_W = 810;   // 3:4 portrait width
+  const PAGE_H = 1080;  // Letter height
   const GAP = 50;
-  const PAGE_W = 1440;   // Letter width
-  const PAGE_H = 810;  // Letter height
 
   const y = last ? last.y + (last.props.h as number ?? PAGE_H) + GAP : 0;
-  const x = last ? last.x : 0;
+  const x = (1440 - PAGE_W) / 2; // Center horizontally in 1440 width
   
   const frameId = createShapeId();
-  const bgId = createShapeId();
 
   editor.run(() => {
     editor.createShape({
@@ -92,30 +91,6 @@ export function addHandDrawnPage(editor: Editor) {
       props: { w: PAGE_W, h: PAGE_H, name: `Page ${getNextPageIndex(editor) + 1}` },
       meta: { pageIndex: getNextPageIndex(editor) },
     });
-
-    editor.createShape({
-      id: bgId,
-      type: 'geo',
-      parentId: frameId,
-      x: 0,
-      y: 0,
-      props: {
-        w: PAGE_W,
-        h: PAGE_H,
-        geo: 'rectangle',
-        color: 'white',
-        fill: 'solid',
-        dash: 'draw',
-        size: 'm',
-        font: 'draw',
-        align: 'middle',
-      },
-      // lock the background so it can't be accidentally moved
-      isLocked: true,
-    });
-    
-    // Send background to back
-    editor.sendToBack([bgId]);
   });
 }
 
@@ -138,10 +113,10 @@ export async function importPdf(
 
   let nextIndex = getNextPageIndex(editor);
   const pages = getPagesSorted(editor);
-  const PAGE_W = 1440;
-  const PAGE_H = 810;
-  const CANVAS_W = 2880;
-  const CANVAS_H = 1620;
+  const PAGE_W = 810;   // 3:4 portrait width
+  const PAGE_H = 1080;  // Letter height
+  const CANVAS_W = 1620;  // 3:4 portrait canvas width
+  const CANVAS_H = 2160; // 3:4 portrait canvas height
   
   let y = pages.length
     ? pages[pages.length - 1].y + ((pages[pages.length - 1].props.h as number) ?? 0) + 50
@@ -215,7 +190,7 @@ export async function importPdf(
       editor.createShape({
         id: frameId,
         type: 'frame',
-        x: 0,
+        x: (1440 - w) / 2, // Center horizontally in 1440 width
         y: currentY,
         props: { w, h, name: `Page ${pageIdx + 1}` },
         meta: { pageIndex: pageIdx },
@@ -264,10 +239,10 @@ export async function importPdf(
  */
 export async function importImage(editor: Editor, file: File) {
   const SYNC_WORKER_URL = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
-  const PAGE_W = 1440;
-  const PAGE_H = 810;
-  const CANVAS_W = 2880;
-  const CANVAS_H = 1620;
+  const PAGE_W = 810;   // 3:4 portrait width
+  const PAGE_H = 1080;  // Letter height
+  const CANVAS_W = 1620;  // 3:4 portrait canvas width
+  const CANVAS_H = 2160; // 3:4 portrait canvas height
 
   // 1. Get image dimensions
   const img: HTMLImageElement = await new Promise((resolve, reject) => {
@@ -340,7 +315,7 @@ export async function importImage(editor: Editor, file: File) {
     editor.createShape({
       id: frameId,
       type: 'frame',
-      x: 0,
+      x: (1440 - w) / 2, // Center horizontally in 1440 width
       y,
       props: { w, h, name: `Page ${nextIndex + 1}` },
       meta: { pageIndex: nextIndex },
