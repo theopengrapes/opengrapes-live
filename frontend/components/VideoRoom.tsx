@@ -2193,7 +2193,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
       </div>
       {/* 4. BOTTOM BAR (72px, spans full width, row 3) */}
       <div 
-        className="row-start-3 col-start-1 col-span-full h-[72px] bg-surface border-t border-border px-6 py-1.5 flex items-center justify-between z-50 relative"
+        className="row-start-3 col-start-1 col-span-full h-[72px] bg-surface border-t border-border px-6 py-1.5 flex items-center justify-between z-[120] relative"
       >
         
         {/* Controls container (spaced evenly) */}
@@ -2233,7 +2233,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
             {/* Mic device select dropdown menu */}
             {showMicMenu && (
               <div 
-                className="absolute bottom-[68px] left-1/2 -translate-x-1/2 w-64 bg-surface border border-border rounded-xl shadow-2xl p-1.5 flex flex-col gap-0.5 text-text z-50 animate-in fade-in slide-in-from-bottom-2 duration-150 font-sans"
+                className="absolute bottom-[68px] left-0 w-64 bg-surface border border-border rounded-xl shadow-2xl p-1.5 flex flex-col gap-0.5 text-text z-50 animate-in fade-in slide-in-from-bottom-2 duration-150 font-sans"
               >
                 <div className="px-3 py-1.5 border-b border-border/20 select-none text-left">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Select Microphone</span>
@@ -2296,7 +2296,7 @@ function RoomContent({ roomName, userName, onLeave, onConnected, sessionToken }:
             {/* Camera device select dropdown menu */}
             {showCamMenu && (
               <div 
-                className="absolute bottom-[68px] left-1/2 -translate-x-1/2 w-64 bg-surface border border-border rounded-xl shadow-2xl p-1.5 flex flex-col gap-0.5 text-text z-50 animate-in fade-in slide-in-from-bottom-2 duration-150 font-sans"
+                className="absolute bottom-[68px] left-0 w-64 bg-surface border border-border rounded-xl shadow-2xl p-1.5 flex flex-col gap-0.5 text-text z-50 animate-in fade-in slide-in-from-bottom-2 duration-150 font-sans"
               >
                 <div className="px-3 py-1.5 border-b border-border/20 select-none text-left">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Select Camera</span>

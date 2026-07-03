@@ -275,7 +275,7 @@ export default function DesktopControls({
 
           {/* Audio selector menu */}
           {showMicMenu && (
-            <div className="absolute bottom-[68px] left-1/2 -translate-x-1/2 w-64 bg-[#0b0f19]/95 border border-white/10 rounded-xl shadow-2xl p-1.5 flex flex-col gap-0.5 text-[#C2CCDE] z-[200] animate-in fade-in slide-in-from-bottom-2 duration-150 font-sans">
+            <div className="absolute bottom-[68px] left-0 w-64 bg-[#0b0f19]/95 border border-white/10 rounded-xl shadow-2xl p-1.5 flex flex-col gap-0.5 text-[#C2CCDE] z-[200] animate-in fade-in slide-in-from-bottom-2 duration-150 font-sans">
               <div className="px-3 py-1.5 border-b border-white/5 select-none text-left">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-[#C2CCDE]/40">Select Microphone</span>
               </div>
@@ -397,7 +397,7 @@ export default function DesktopControls({
 
           {/* Camera selector menu */}
           {showCamMenu && (
-            <div className="absolute bottom-[68px] left-1/2 -translate-x-1/2 w-64 bg-[#0b0f19]/95 border border-white/10 rounded-xl shadow-2xl p-1.5 flex flex-col gap-0.5 text-[#C2CCDE] z-[200] animate-in fade-in slide-in-from-bottom-2 duration-150 font-sans">
+            <div className="absolute bottom-[68px] left-0 w-64 bg-[#0b0f19]/95 border border-white/10 rounded-xl shadow-2xl p-1.5 flex flex-col gap-0.5 text-[#C2CCDE] z-[200] animate-in fade-in slide-in-from-bottom-2 duration-150 font-sans">
               <div className="px-3 py-1.5 border-b border-white/5 select-none text-left">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-[#C2CCDE]/40">Select Camera</span>
               </div>
