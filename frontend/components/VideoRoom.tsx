@@ -2607,7 +2607,7 @@ export default function VideoRoom({
       publishDefaults: {
         videoCodec: 'vp9',
         backupCodec: true, // Allow fallback to H.264 dynamically on receiver-level or for older clients
-        degradationPreference: 'balanced', // Keep camera feeds balanced/fluid under low bandwidth
+        degradationPreference: 'maintain-resolution', // maintains resolution but drops frame-rate when poor bandwidth
       },
       videoCaptureDefaults: {
         resolution: { width: 1280, height: 720, frameRate: 30 },
