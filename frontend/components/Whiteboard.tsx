@@ -919,7 +919,7 @@ function EmptyWhiteboardOverlay({ editor, isTeacher }: { editor: any; isTeacher:
       <div className="text-center p-6 max-w-sm rounded-2xl bg-white/85 border border-zinc-300 shadow-md backdrop-blur-md">
         <p className="text-sm font-semibold text-zinc-500 font-sans leading-relaxed">
           {isTeacher 
-            ? "Click on + Add page to start writing"
+            ? "No page added yet."
             : "Waiting for the teacher to start writing..."}
         </p>
       </div>

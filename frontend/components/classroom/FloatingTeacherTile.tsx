@@ -59,7 +59,7 @@ export default function FloatingTeacherTile({
       
       setPosition((prev) => {
         const newX = Math.max(10, Math.min(prev.x, window.innerWidth - tileWidth - 10));
-        const newY = Math.max(10, Math.min(prev.y, window.innerHeight - tileHeight - 170));
+        const newY = Math.max(10, Math.min(prev.y, window.innerHeight - tileHeight - 130));
         return { x: newX, y: newY };
       });
     };
@@ -99,7 +99,7 @@ export default function FloatingTeacherTile({
     const tileHeight = tile.offsetHeight;
     
     newX = Math.max(10, Math.min(newX, window.innerWidth - tileWidth - 10));
-    newY = Math.max(10, Math.min(newY, window.innerHeight - tileHeight - 170));
+    newY = Math.max(10, Math.min(newY, window.innerHeight - tileHeight - 130));
     
     setPosition({ x: newX, y: newY });
   }, []);
