@@ -16,7 +16,7 @@ const pusher = new pusher_1.default({
 // never break the LiveKit token-issuance or webhook flow that calls this.
 async function triggerTeacherJoined(roomId, batchId, batchName) {
     try {
-        await pusher.trigger(`batch-${batchId}`, 'teacher-joined', { roomId, batchId, batchName });
+        await pusher.trigger(`private-batch-${batchId}`, 'teacher-joined', { roomId, batchId, batchName });
     }
     catch (err) {
         console.error('[Pusher] Failed to trigger teacher-joined:', err);
