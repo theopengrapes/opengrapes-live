@@ -12,7 +12,7 @@ import path from 'path';
 import { db } from './db';
 import { requireAuth, requireRole, requireClassroomAuth, requireLMSOrClassroomAuth } from './auth';
 import { requestAI } from './ai-provider';
-import { triggerTeacherJoined } from './pusher';
+import { triggerTeacherJoined, triggerMeetingEnded } from './pusher';
 
 // Ensure uploads folder exists
 const uploadsDir = path.join(__dirname, '../uploads');
@@ -603,6 +603,8 @@ Make the tone professional, structured, and easy for students to study from.`;
     );
 
     if (activeSession && activeSession.roomId) {
+      await triggerMeetingEnded(activeSession.roomId, batchId, batch.name);
+
       try {
         await roomService.deleteRoom(activeSession.roomId);
       } catch (lkErr: any) {
@@ -731,6 +733,20 @@ app.get('/api/livekit-url', (req, res) => {
   res.json({ url: livekitUrl });
 });
 
+// Looks up the batch for a roomId and fires meeting-ended. Best-effort —
+// failures here must never affect the webhook flow that calls this.
+async function notifyMeetingEnded(roomId: string) {
+  try {
+    const sessionRes = await db.query('SELECT "batchId" FROM "LiveSession" WHERE "roomId" = $1', [roomId]);
+    const batchId = sessionRes.rows[0]?.batchId;
+    if (!batchId) return;
+    const batchRes = await db.query('SELECT name FROM "Batch" WHERE id = $1', [batchId]);
+    await triggerMeetingEnded(roomId, batchId, batchRes.rows[0]?.name || '');
+  } catch (err) {
+    console.error('[Pusher] Failed to look up batch for meeting-ended:', err);
+  }
+}
+
 app.post('/api/livekit-webhook', async (req, res) => {
   try {
     const rawBody = (req as any).rawBody;
@@ -757,9 +773,12 @@ app.post('/api/livekit-webhook', async (req, res) => {
         console.log(`[Webhook][room_finished] Cleared pending teacher absent timeout for room: ${roomName}`);
       }
 
-      await db.query('UPDATE "LiveSession" SET status = \'completed\', "endedAt" = NOW() WHERE "roomId" = $1 AND status = \'live\'', [roomName]);
+      const endRes = await db.query('UPDATE "LiveSession" SET status = \'completed\', "endedAt" = NOW() WHERE "roomId" = $1 AND status = \'live\'', [roomName]);
       console.log(`[Webhook] Room finished, marked session as completed for room: ${roomName}`);
-    } 
+      if (endRes.rowCount) {
+        await notifyMeetingEnded(roomName);
+      }
+    }
     
     else if (event.event === 'participant_left') {
       const participantMetadata = event.participant?.metadata;
@@ -776,8 +795,11 @@ app.post('/api/livekit-webhook', async (req, res) => {
               const timeout = setTimeout(async () => {
                 try {
                   console.log(`[Webhook] 10-minute grace period expired. Auto-terminating room: ${roomName}...`);
-                  
-                  await db.query('UPDATE "LiveSession" SET status = \'completed\', "endedAt" = NOW() WHERE "roomId" = $1 AND status = \'live\'', [roomName]);
+
+                  const autoEndRes = await db.query('UPDATE "LiveSession" SET status = \'completed\', "endedAt" = NOW() WHERE "roomId" = $1 AND status = \'live\'', [roomName]);
+                  if (autoEndRes.rowCount) {
+                    await notifyMeetingEnded(roomName);
+                  }
 
                   await roomService.deleteRoom(roomName);
                   

@@ -17,3 +17,11 @@ export async function triggerTeacherJoined(roomId: string, batchId: string, batc
     console.error('[Pusher] Failed to trigger teacher-joined:', err);
   }
 }
+
+export async function triggerMeetingEnded(meetingId: string, batchId: string, batchName: string) {
+  try {
+    await pusher.trigger(`private-batch-${batchId}`, 'meeting-ended', { meetingId, batchId, batchName });
+  } catch (err) {
+    console.error('[Pusher] Failed to trigger meeting-ended:', err);
+  }
+}

@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.triggerTeacherJoined = triggerTeacherJoined;
+exports.triggerMeetingEnded = triggerMeetingEnded;
 const pusher_1 = __importDefault(require("pusher"));
 const pusher = new pusher_1.default({
     appId: process.env.PUSHER_APP_ID || '',
@@ -20,5 +21,13 @@ async function triggerTeacherJoined(roomId, batchId, batchName) {
     }
     catch (err) {
         console.error('[Pusher] Failed to trigger teacher-joined:', err);
+    }
+}
+async function triggerMeetingEnded(meetingId, batchId, batchName) {
+    try {
+        await pusher.trigger(`private-batch-${batchId}`, 'meeting-ended', { meetingId, batchId, batchName });
+    }
+    catch (err) {
+        console.error('[Pusher] Failed to trigger meeting-ended:', err);
     }
 }
