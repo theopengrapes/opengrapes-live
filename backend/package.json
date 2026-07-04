@@ -15,7 +15,8 @@
     "jsonwebtoken": "^9.0.3",
     "livekit-server-sdk": "^2.0.0",
     "multer": "^2.2.0",
-    "pg": "^8.22.0"
+    "pg": "^8.22.0",
+    "pusher": "^5.3.4"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",

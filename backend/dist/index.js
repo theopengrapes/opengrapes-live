@@ -15,6 +15,7 @@ const path_1 = __importDefault(require("path"));
 const db_1 = require("./db");
 const auth_1 = require("./auth");
 const ai_provider_1 = require("./ai-provider");
+const pusher_1 = require("./pusher");
 // Ensure uploads folder exists
 const uploadsDir = path_1.default.join(__dirname, '../uploads');
 if (!fs_1.default.existsSync(uploadsDir)) {
@@ -253,6 +254,17 @@ app.post('/api/token', async (req, res) => {
             }
             catch (dbErr) {
                 console.error('Failed to update teacherJoined status in database:', dbErr);
+            }
+            try {
+                const sessionRes = await db_1.db.query('SELECT "batchId" FROM "LiveSession" WHERE "roomId" = $1', [roomName]);
+                const batchId = sessionRes.rows[0]?.batchId;
+                if (batchId) {
+                    const batchRes = await db_1.db.query('SELECT name FROM "Batch" WHERE id = $1', [batchId]);
+                    await (0, pusher_1.triggerTeacherJoined)(roomName, batchId, batchRes.rows[0]?.name || '');
+                }
+            }
+            catch (pusherErr) {
+                console.error('Failed to trigger teacher-joined Pusher event:', pusherErr);
             }
         }
         at.addGrant({
@@ -678,6 +690,17 @@ app.post('/api/livekit-webhook', async (req, res) => {
                 }
                 await db_1.db.query('UPDATE "LiveSession" SET "teacherJoined" = true WHERE "roomId" = $1 AND status = \'live\'', [roomName]);
                 console.log(`[Webhook] Teacher joined room ${roomName}. Marked teacherJoined as true.`);
+                try {
+                    const sessionRes = await db_1.db.query('SELECT "batchId" FROM "LiveSession" WHERE "roomId" = $1', [roomName]);
+                    const batchId = sessionRes.rows[0]?.batchId;
+                    if (batchId) {
+                        const batchRes = await db_1.db.query('SELECT name FROM "Batch" WHERE id = $1', [batchId]);
+                        await (0, pusher_1.triggerTeacherJoined)(roomName, batchId, batchRes.rows[0]?.name || '');
+                    }
+                }
+                catch (pusherErr) {
+                    console.error('[Webhook] Failed to trigger teacher-joined Pusher event:', pusherErr);
+                }
             }
         }
         res.status(200).send('OK');
@@ -788,11 +811,12 @@ app.post('/api/transcribe', auth_1.requireClassroomAuth, upload.single('audio'),
 });
 // POST /api/doubt: Streams Gemini 2.5 Flash response to student doubts and logs to SQLite
 app.post('/api/doubt', auth_1.requireClassroomAuth, async (req, res) => {
-    const { sessionId, doubtText, screenshot, enableThinking } = req.body;
+    const { sessionId, screenshot, enableThinking } = req.body;
+    const doubtText = req.body.doubtText || '';
     const studentId = req.user.userId;
     const studentName = req.user.name;
-    if (!sessionId || !doubtText) {
-        res.status(400).json({ error: 'sessionId and doubtText are required' });
+    if (!sessionId || (!doubtText && !screenshot)) {
+        res.status(400).json({ error: 'sessionId and doubtText (or screenshot) are required' });
         return;
     }
     const hasGeminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_KEY_1;
