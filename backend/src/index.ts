@@ -12,6 +12,7 @@ import path from 'path';
 import { db } from './db';
 import { requireAuth, requireRole, requireClassroomAuth, requireLMSOrClassroomAuth } from './auth';
 import { requestAI } from './ai-provider';
+import { triggerTeacherJoined } from './pusher';
 
 // Ensure uploads folder exists
 const uploadsDir = path.join(__dirname, '../uploads');
@@ -325,6 +326,17 @@ app.post('/api/token', async (req, res) => {
         await db.query('UPDATE "LiveSession" SET "teacherJoined" = true WHERE "roomId" = $1', [roomName]);
       } catch (dbErr) {
         console.error('Failed to update teacherJoined status in database:', dbErr);
+      }
+
+      try {
+        const sessionRes = await db.query('SELECT "batchId" FROM "LiveSession" WHERE "roomId" = $1', [roomName]);
+        const batchId = sessionRes.rows[0]?.batchId;
+        if (batchId) {
+          const batchRes = await db.query('SELECT name FROM "Batch" WHERE id = $1', [batchId]);
+          await triggerTeacherJoined(roomName, batchId, batchRes.rows[0]?.name || '');
+        }
+      } catch (pusherErr) {
+        console.error('Failed to trigger teacher-joined Pusher event:', pusherErr);
       }
     }
 
@@ -798,6 +810,17 @@ app.post('/api/livekit-webhook', async (req, res) => {
         }
         await db.query('UPDATE "LiveSession" SET "teacherJoined" = true WHERE "roomId" = $1 AND status = \'live\'', [roomName]);
         console.log(`[Webhook] Teacher joined room ${roomName}. Marked teacherJoined as true.`);
+
+        try {
+          const sessionRes = await db.query('SELECT "batchId" FROM "LiveSession" WHERE "roomId" = $1', [roomName]);
+          const batchId = sessionRes.rows[0]?.batchId;
+          if (batchId) {
+            const batchRes = await db.query('SELECT name FROM "Batch" WHERE id = $1', [batchId]);
+            await triggerTeacherJoined(roomName, batchId, batchRes.rows[0]?.name || '');
+          }
+        } catch (pusherErr) {
+          console.error('[Webhook] Failed to trigger teacher-joined Pusher event:', pusherErr);
+        }
       }
     }
 

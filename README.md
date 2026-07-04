@@ -32,6 +32,14 @@ LIVEKIT_API_SECRET=secret
 PORT=3001
 METERED_API_KEY=your_metered_api_key
 METERED_APP_NAME=your_metered_app_name
+
+# Same Pusher Channels app as the LMS (opengrapes-lms) — used to notify the
+# LMS's batch-{batchId} channel when the teacher's video connection is
+# confirmed, so the student "Join" button can appear without a page refresh.
+PUSHER_APP_ID=your_pusher_app_id
+PUSHER_KEY=your_pusher_key
+PUSHER_SECRET=your_pusher_secret
+PUSHER_CLUSTER=your_pusher_cluster
 ```
 
 ### Frontend (`frontend/.env.local`)
