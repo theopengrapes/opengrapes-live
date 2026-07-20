@@ -62,6 +62,61 @@ const getLivekitHttpUrl = (wsUrl) => {
 const roomService = new livekit_server_sdk_1.RoomServiceClient(getLivekitHttpUrl(livekitUrl), LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
 const webhookReceiver = new livekit_server_sdk_1.WebhookReceiver(LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
 const teacherLeftTimeouts = new Map();
+// A session left status = 'live' this long is considered abandoned (teacher
+// never clicked "End"). Kept as one constant so the in-memory timer and every
+// SQL read-guard below can't drift apart.
+const STALE_SESSION_HOURS = 2;
+const STALE_SESSION_MS = STALE_SESSION_HOURS * 60 * 60 * 1000;
+const staleSessionTimeouts = new Map();
+// Schedules a one-shot check that expires this room's session if it's still
+// 'live' STALE_SESSION_HOURS after it started. This only keeps the stored
+// status column honest for anyone querying it directly (e.g. past-session
+// history) — every live-session read below is itself time-windowed, so
+// clients never depend on this timer having already fired.
+function scheduleStaleSessionExpiry(roomId, startedAt) {
+    const delay = Math.max(STALE_SESSION_MS - (Date.now() - startedAt.getTime()), 0);
+    const timeout = setTimeout(async () => {
+        staleSessionTimeouts.delete(roomId);
+        try {
+            const res = await db_1.db.query(`UPDATE "LiveSession" SET status = 'expired', "endedAt" = NOW() WHERE "roomId" = $1 AND status = 'live'`, [roomId]);
+            if (res.rowCount) {
+                console.log(`[Expiry] Automatically expired stale live session (room: ${roomId})`);
+            }
+        }
+        catch (error) {
+            console.error(`[Expiry] Error expiring session for room ${roomId}:`, error);
+        }
+    }, delay);
+    staleSessionTimeouts.set(roomId, timeout);
+}
+function cancelStaleSessionExpiry(roomId) {
+    const pending = staleSessionTimeouts.get(roomId);
+    if (pending) {
+        clearTimeout(pending);
+        staleSessionTimeouts.delete(roomId);
+    }
+}
+// In-memory timers above don't survive a process restart, so anything still
+// 'live' when the process boots needs a fresh timer (or immediate expiry, if
+// it's already past the window). One query, once per boot — not a poll.
+async function sweepStaleSessionsOnStartup() {
+    try {
+        const liveRes = await db_1.db.query(`SELECT "roomId", "startedAt" FROM "LiveSession" WHERE status = 'live'`);
+        for (const row of liveRes.rows) {
+            const startedAt = new Date(row.startedAt);
+            if (Date.now() - startedAt.getTime() >= STALE_SESSION_MS) {
+                await db_1.db.query(`UPDATE "LiveSession" SET status = 'expired', "endedAt" = NOW() WHERE "roomId" = $1 AND status = 'live'`, [row.roomId]);
+                console.log(`[Startup Sweep] Expired stale live session (room: ${row.roomId})`);
+            }
+            else {
+                scheduleStaleSessionExpiry(row.roomId, startedAt);
+            }
+        }
+    }
+    catch (error) {
+        console.error('[Startup Sweep] Error sweeping stale sessions on startup:', error);
+    }
+}
 async function isTeacherPresent(roomId) {
     try {
         const participants = await roomService.listParticipants(roomId);
@@ -128,6 +183,7 @@ app.post('/api/exchange-lms-token', async (req, res) => {
                 // Insert live session
                 const insertRes = await db_1.db.query('INSERT INTO "LiveSession" (id, "batchId", "roomId", status, "startedAt", "teacherJoined", "hasNotes") VALUES ($1, $2, $3, \'live\', NOW(), false, false) RETURNING id, "batchId", "roomId", status, "startedAt", "teacherJoined", "hasNotes"', [sessionId, batchId, meetingId]);
                 liveSession = insertRes.rows[0];
+                scheduleStaleSessionExpiry(meetingId, new Date(liveSession.startedAt));
                 // Trigger Sync Worker DO initialization
                 const workerUrl = (process.env.NEXT_PUBLIC_SYNC_WORKER_URL || 'http://localhost:8787').replace(/\/+$/, '');
                 const workerSecret = process.env.WORKER_API_SECRET || '';
@@ -200,8 +256,10 @@ app.post('/api/renew-session', async (req, res) => {
             res.status(401).json({ error: 'Invalid token type' });
             return;
         }
-        // Check if session status is still live in PostgreSQL
-        const sessionRes = await db_1.db.query('SELECT status FROM "LiveSession" WHERE "roomId" = $1', [decoded.roomId]);
+        // Check if session status is still live in PostgreSQL. Time-windowed so a
+        // session past the staleness threshold reads as gone even if its expiry
+        // timer hasn't fired yet (see STALE_SESSION_HOURS above).
+        const sessionRes = await db_1.db.query(`SELECT status FROM "LiveSession" WHERE "roomId" = $1 AND "startedAt" >= NOW() - INTERVAL '${STALE_SESSION_HOURS} hours'`, [decoded.roomId]);
         const session = sessionRes.rows[0];
         if (!session || session.status !== 'live') {
             res.status(401).json({ error: 'Classroom session is no longer active' });
@@ -290,6 +348,7 @@ app.get('/api/my-batches', auth_1.requireAuth, async (req, res) => {
                ls."roomId" as "activeRoomId", ls."startedAt" as "activeStartedAt"
         FROM "Batch" b
         LEFT JOIN "LiveSession" ls ON ls."batchId" = b.id AND ls.status = 'live'
+          AND ls."startedAt" >= NOW() - INTERVAL '${STALE_SESSION_HOURS} hours'
         WHERE b."teacherId" = $1
       `, [req.user.userId]);
             const batches = batchesRes.rows;
@@ -339,6 +398,7 @@ app.get('/api/my-batches', auth_1.requireAuth, async (req, res) => {
         JOIN "Batch" b ON e."batchId" = b.id
         JOIN "User" u ON b."teacherId" = u.id
         LEFT JOIN "LiveSession" ls ON ls."batchId" = b.id AND ls.status = 'live'
+          AND ls."startedAt" >= NOW() - INTERVAL '${STALE_SESSION_HOURS} hours'
         WHERE e."studentId" = $1 AND e.status = 'APPROVED'
       `, [req.user.userId]);
             const batches = batchesRes.rows;
@@ -395,7 +455,7 @@ app.post('/api/end-class', auth_1.requireLMSOrClassroomAuth, (0, auth_1.requireR
             return;
         }
         // Get the active session room_id before updating
-        const activeSessionRes = await db_1.db.query('SELECT "roomId" FROM "LiveSession" WHERE "batchId" = $1 AND status = \'live\'', [batchId]);
+        const activeSessionRes = await db_1.db.query(`SELECT "roomId" FROM "LiveSession" WHERE "batchId" = $1 AND status = 'live' AND "startedAt" >= NOW() - INTERVAL '${STALE_SESSION_HOURS} hours'`, [batchId]);
         const activeSession = activeSessionRes.rows[0];
         if (activeSession && activeSession.roomId) {
             const sessionId = activeSession.roomId;
@@ -508,6 +568,7 @@ Make the tone professional, structured, and easy for students to study from.`;
         // Set session as completed and store hasNotes
         await db_1.db.query('UPDATE "LiveSession" SET status = \'completed\', "endedAt" = NOW(), "hasNotes" = $1 WHERE "batchId" = $2 AND status = \'live\'', [hasNotes === true, batchId]);
         if (activeSession && activeSession.roomId) {
+            cancelStaleSessionExpiry(activeSession.roomId);
             await (0, pusher_1.triggerMeetingEnded)(activeSession.roomId, batchId, batch.name);
             try {
                 await roomService.deleteRoom(activeSession.roomId);
@@ -660,6 +721,7 @@ app.post('/api/livekit-webhook', async (req, res) => {
             const endRes = await db_1.db.query('UPDATE "LiveSession" SET status = \'completed\', "endedAt" = NOW() WHERE "roomId" = $1 AND status = \'live\'', [roomName]);
             console.log(`[Webhook] Room finished, marked session as completed for room: ${roomName}`);
             if (endRes.rowCount) {
+                cancelStaleSessionExpiry(roomName);
                 await notifyMeetingEnded(roomName);
             }
         }
@@ -679,6 +741,7 @@ app.post('/api/livekit-webhook', async (req, res) => {
                                     console.log(`[Webhook] 10-minute grace period expired. Auto-terminating room: ${roomName}...`);
                                     const autoEndRes = await db_1.db.query('UPDATE "LiveSession" SET status = \'completed\', "endedAt" = NOW() WHERE "roomId" = $1 AND status = \'live\'', [roomName]);
                                     if (autoEndRes.rowCount) {
+                                        cancelStaleSessionExpiry(roomName);
                                         await notifyMeetingEnded(roomName);
                                     }
                                     await roomService.deleteRoom(roomName);
@@ -736,29 +799,11 @@ app.post('/api/livekit-webhook', async (req, res) => {
 app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
-// Periodic stale session cleanup sweep (every 60 seconds)
-setInterval(async () => {
-    try {
-        const expiredRes = await db_1.db.query(`
-      SELECT id, "roomId" as "room_id" FROM "LiveSession"
-      WHERE status = 'live' AND "startedAt" < NOW() - INTERVAL '2 hours'
-    `);
-        const expired = expiredRes.rows;
-        if (expired.length > 0) {
-            for (const sess of expired) {
-                await db_1.db.query(`
-          UPDATE "LiveSession"
-          SET status = 'expired', "endedAt" = NOW()
-          WHERE id = $1
-        `, [sess.id]);
-                console.log(`[Sweep] Automatically expired live session ${sess.id} (room: ${sess.room_id})`);
-            }
-        }
-    }
-    catch (error) {
-        console.error('[Sweep] Error during stale session cleanup:', error);
-    }
-}, 60000);
+// Stale-session cleanup is now event-driven: a per-session timer is scheduled
+// on start and cancelled on end (see scheduleStaleSessionExpiry /
+// cancelStaleSessionExpiry above). This is the one-time restart-safety sweep
+// for whatever was still 'live' when the process last stopped.
+sweepStaleSessionsOnStartup();
 // =========================================================================
 // SPEECH SYNC, VAD TRANSCRIPTION, AND AI DOUBT SOLVER ENDPOINTS
 // =========================================================================
